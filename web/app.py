@@ -38,6 +38,8 @@ from web.import_tools import build_import_tools  # noqa: E402
 from web.listing_gen import generate_listing  # noqa: E402
 from web.opp_suggest import suggest_opportunities  # noqa: E402
 from web.database import connect, init_db  # noqa: E402
+from web.documents import (create_document, documents_for_session, get_document,
+                           list_versions, update_document)  # noqa: E402
 from web.import_service import (ads_chat_context, ads_overview, competitor_rows, customer_overview, list_imports,
                                 parse_upload, parse_upload_preview, save_import, suggest_mapping)  # noqa: E402
 
@@ -236,6 +238,19 @@ class ChatSessionIn(BaseModel):
 
 class ChatMessageIn(BaseModel):
     role: str
+    content: str
+
+
+class DocumentCreateIn(BaseModel):
+    doc_type: str
+    title: str
+    content: str
+    session_id: str | None = None
+    source_message_id: int | None = None
+
+
+class DocumentUpdateIn(BaseModel):
+    title: str
     content: str
 
 
@@ -523,10 +538,19 @@ def get_chat_session(session_id: str,
         if not row:
             raise HTTPException(status_code=404, detail="对话不存在")
         messages = db.execute(
-            "SELECT role,content,created_at FROM chat_messages WHERE session_id=? ORDER BY id",
+            "SELECT id,role,content,created_at FROM chat_messages WHERE session_id=? ORDER BY id",
             (session_id,),
         ).fetchall()
-    return {**dict(row), "messages": [dict(m) for m in messages]}
+    documents = {d["source_message_id"]: d for d in documents_for_session(
+        session_id, x_tradeflow_user, x_tradeflow_store
+    ) if d.get("source_message_id") is not None}
+    items = []
+    for message in messages:
+        item = dict(message)
+        if message["id"] in documents:
+            item["document"] = documents[message["id"]]
+        items.append(item)
+    return {**dict(row), "messages": items}
 
 
 @app.post("/api/chat/sessions/{session_id}/messages")
@@ -549,6 +573,64 @@ def add_chat_message(session_id: str, body: ChatMessageIn,
             db.execute("UPDATE chat_sessions SET title=? WHERE id=?", (_short_title(content), session_id))
         db.execute("UPDATE chat_sessions SET updated_at=CURRENT_TIMESTAMP WHERE id=?", (session_id,))
     return {"ok": True, "id": cur.lastrowid}
+
+
+@app.post("/api/documents")
+def create_business_document(body: DocumentCreateIn,
+                             x_tradeflow_user: str = Depends(auth.current_user),
+                             x_tradeflow_store: str = Depends(_current_store)) -> Dict[str, Any]:
+    try:
+        return create_document(x_tradeflow_user, x_tradeflow_store, body.doc_type, body.title,
+                               body.content, body.session_id, body.source_message_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/documents/{document_id}")
+def business_document(document_id: str,
+                      x_tradeflow_user: str = Depends(auth.current_user),
+                      x_tradeflow_store: str = Depends(_current_store)) -> Dict[str, Any]:
+    document = get_document(document_id, x_tradeflow_user, x_tradeflow_store)
+    if not document:
+        raise HTTPException(status_code=404, detail="文档不存在")
+    return document
+
+
+@app.patch("/api/documents/{document_id}")
+def update_business_document(document_id: str, body: DocumentUpdateIn,
+                             x_tradeflow_user: str = Depends(auth.current_user),
+                             x_tradeflow_store: str = Depends(_current_store)) -> Dict[str, Any]:
+    try:
+        document = update_document(document_id, x_tradeflow_user, x_tradeflow_store,
+                                   body.title, body.content)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not document:
+        raise HTTPException(status_code=404, detail="文档不存在")
+    return document
+
+
+@app.get("/api/documents/{document_id}/versions")
+def business_document_versions(document_id: str,
+                               x_tradeflow_user: str = Depends(auth.current_user),
+                               x_tradeflow_store: str = Depends(_current_store)) -> Dict[str, Any]:
+    versions = list_versions(document_id, x_tradeflow_user, x_tradeflow_store)
+    if versions is None:
+        raise HTTPException(status_code=404, detail="文档不存在")
+    return {"items": versions}
+
+
+@app.get("/api/documents/{document_id}/export")
+def export_business_document(document_id: str,
+                             x_tradeflow_user: str = Depends(auth.current_user),
+                             x_tradeflow_store: str = Depends(_current_store)) -> Response:
+    document = get_document(document_id, x_tradeflow_user, x_tradeflow_store)
+    if not document:
+        raise HTTPException(status_code=404, detail="文档不存在")
+    body = f"# {document['title']}\n\n{document['content']}\n"
+    filename = f"tradeflow-{document['doc_type']}-{document['id']}.md"
+    return Response(body, media_type="text/markdown; charset=utf-8",
+                    headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
 
 @app.get("/")

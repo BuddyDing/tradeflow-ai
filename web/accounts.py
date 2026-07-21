@@ -16,7 +16,7 @@ from web.database import connect, init_db
 MIN_PASSWORD_LEN = 8
 
 _MIGRATE_TABLES = (
-    "stores", "opportunities", "import_batches", "imported_rows", "chat_sessions", "audit_log",
+    "stores", "opportunities", "import_batches", "imported_rows", "chat_sessions", "documents", "audit_log",
 )
 
 

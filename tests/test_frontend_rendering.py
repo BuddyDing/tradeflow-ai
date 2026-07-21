@@ -79,3 +79,39 @@ def test_frontend_markdown_renderer_handles_table_edge_cases():
     assert "prose" in output
     assert "compact" in output
     assert "longUser" in output
+
+
+def test_import_history_reloads_and_excel_tab_is_primary():
+    html = HTML.read_text(encoding="utf-8")
+    excel_tab = '<button class="tab active" data-t="excel">Excel 导入</button>'
+    sp_api_tab = '<button class="tab" data-t="amazon">SP-API 同步</button>'
+
+    assert excel_tab in html
+    assert sp_api_tab in html
+    assert html.index(excel_tab) < html.index(sp_api_tab)
+    assert '<div id="tab-amazon" style="display:none">' in html
+    assert '<div id="tab-excel">' in html
+    assert "async function loadImportHistory()" in html
+    assert "fetch('/api/imports')" in html
+    assert "loadCustomers();loadImportHistory();" in html
+
+
+def test_chat_business_documents_have_edit_copy_export_and_versions():
+    html = HTML.read_text(encoding="utf-8")
+
+    assert "function documentBubble(content,doc,badge='')" in html
+    assert "class=\"btn ghost doc-edit\"" in html
+    assert "class=\"btn ghost doc-copy\"" in html
+    assert "class=\"btn ghost doc-export\"" in html
+    assert "class=\"btn ghost doc-history\"" in html
+    assert "保存新版本" in html
+    assert "createDocumentForReply(agent,text" in html
+
+
+def test_product_functions_expand_when_sidebar_is_hovered():
+    html = HTML.read_text(encoding="utf-8")
+
+    assert '<div class="nav-label product-nav-label">产品功能</div>' in html
+    assert ".product-nav-label,.agent-nav{max-height:0;opacity:0;overflow:hidden;pointer-events:none;flex:0 0 auto" in html
+    assert ".side:hover .agent-nav,.side:focus-within .agent-nav" in html
+    assert "max-height:1200px;opacity:1;pointer-events:auto" in html

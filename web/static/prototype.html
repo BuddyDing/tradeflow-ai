@@ -129,6 +129,13 @@ h1,h2,h3,h4{margin:0;font-weight:600;text-wrap:balance}
 .agent-nav-item b{display:block;font-size:12.5px;line-height:1.25}
 .agent-nav-item span.desc{display:block;font-size:11px;line-height:1.35;color:var(--faint);margin-top:2px}
 .agent-nav-item.active span.desc{color:var(--dim)}
+.product-nav-label,.agent-nav{max-height:0;opacity:0;overflow:hidden;pointer-events:none;flex:0 0 auto;
+  transform:translateY(-4px);margin-top:0;margin-bottom:0;padding-top:0;padding-bottom:0;
+  transition:max-height .24s ease,opacity .16s ease,transform .2s ease,padding .2s ease,margin .2s ease}
+.side:hover .product-nav-label,.side:focus-within .product-nav-label{
+  max-height:36px;opacity:1;transform:none;padding-top:10px;padding-bottom:6px}
+.side:hover .agent-nav,.side:focus-within .agent-nav{
+  max-height:1200px;opacity:1;pointer-events:auto;transform:none;margin-bottom:3px}
 .new-chat{margin:2px 0 8px;border:1px solid var(--border-strong);border-radius:9px;padding:9px 11px;
   display:flex;align-items:center;gap:9px;font-size:13px;font-weight:500;color:var(--text);background:var(--surface)}
 .new-chat:hover{background:var(--surface-2)}
@@ -275,6 +282,19 @@ h1,h2,h3,h4{margin:0;font-weight:600;text-wrap:balance}
 .kw .kwadd{border:1px dashed var(--border-strong);background:none;border-radius:20px;padding:3px 12px;font-size:12px;color:var(--accent-strong);cursor:pointer}
 .kw .kwadd:hover{background:var(--accent-weak);border-color:var(--accent)}
 .lc-act{padding:12px 15px;border-top:1px solid var(--border);display:flex;gap:9px;flex-wrap:wrap}
+.doc-bubble{padding:0;overflow:hidden;min-width:min(680px,78vw)}
+.doc-head{display:flex;align-items:center;gap:8px;padding:10px 13px;border-bottom:1px solid var(--border);background:var(--surface-2)}
+.doc-head .doc-title{font-weight:650;font-size:13px;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.doc-actions{display:flex;gap:5px;flex-wrap:wrap}
+.doc-actions .btn{padding:4px 8px;font-size:11.5px}
+.doc-rendered{padding:14px 16px;max-height:560px;overflow:auto}
+.doc-editor{display:none;padding:14px 16px;background:var(--surface-2)}
+.doc-editor input{margin-bottom:9px;font-weight:600}
+.doc-editor textarea{min-height:320px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;background:var(--surface)}
+.doc-editor-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:9px}
+.doc-versions{display:none;padding:10px 14px;border-top:1px solid var(--border);background:var(--surface-2)}
+.doc-version-row{display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border);font-size:12px}
+.doc-version-row:last-child{border-bottom:none}.doc-version-row .time{color:var(--dim);flex:1}
 
 /* ---------- generic module bits ---------- */
 .card{background:var(--surface);border:1px solid var(--border);border-radius:13px;padding:18px}
@@ -390,6 +410,8 @@ button.imgbox{font-family:inherit}
   .opps{grid-template-columns:1fr 1fr}
   .work,.mail-grid,.starters{grid-template-columns:1fr}
   .side{position:absolute;z-index:40;height:100%}
+  .product-nav-label{max-height:36px;opacity:1;transform:none;padding-top:10px;padding-bottom:6px}
+  .agent-nav{max-height:1200px;opacity:1;pointer-events:auto;transform:none;margin-bottom:3px}
 }
 </style>
 
@@ -417,7 +439,7 @@ button.imgbox{font-family:inherit}
       <button class="nav-item" data-view="optimize"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 21h4"/><path d="M12 3a6 6 0 0 0-4 10.5c.5.5 1 1.3 1 2.5h6c0-1.2.5-2 1-2.5A6 6 0 0 0 12 3z"/></svg>优化建议</button>
       <button class="nav-item" data-view="email"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 7l9 6 9-6"/></svg>客户跟踪</button>
       <button class="nav-item" id="adminNavBtn" data-view="admin" style="display:none"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>账号管理</button>
-      <div class="nav-label">产品功能</div>
+      <div class="nav-label product-nav-label">产品功能</div>
       <div class="agent-nav" id="agentNav"></div>
       <div class="nav-label">最近对话</div>
       <div class="history" id="chatHistoryList"></div>
@@ -503,8 +525,8 @@ button.imgbox{font-family:inherit}
       <!-- ===== IMPORT ===== -->
       <section class="view pad" data-v="import">
         <div class="page-head"><div class="txt"><h2>数据导入</h2><p>当前 MVP 通过 Excel / CSV 上传真实报表驱动分析；SP-API 自动同步未配置时不会模拟成功。</p></div></div>
-        <div class="tabs" id="importTabs"><button class="tab active" data-t="amazon">SP-API 同步</button><button class="tab" data-t="excel">Excel 导入</button></div>
-        <div id="tab-amazon">
+        <div class="tabs" id="importTabs"><button class="tab active" data-t="excel">Excel 导入</button><button class="tab" data-t="amazon">SP-API 同步</button></div>
+        <div id="tab-amazon" style="display:none">
           <div class="card">
             <h3 style="font-size:15px;margin-bottom:14px">从 <b id="impStore">Aurora Home US</b> 自动同步</h3>
             <div class="note" style="margin-bottom:14px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4M12 17h.01"/><circle cx="12" cy="12" r="9"/></svg>当前未配置 Amazon SP-API 授权。这里不会显示假进度或假数据，请使用 Excel 导入真实报表。</div>
@@ -526,7 +548,7 @@ button.imgbox{font-family:inherit}
             </div>
           </div>
         </div>
-        <div id="tab-excel" style="display:none">
+        <div id="tab-excel">
           <div class="card">
             <h3 style="font-size:15px;margin-bottom:6px">上传 Excel / CSV</h3>
             <p style="color:var(--dim);font-size:12.5px;margin:0 0 14px">支持广告报表、订单表、竞品 ASIN 表等。上传后确认字段映射即可入库。</p>
@@ -652,7 +674,7 @@ button.imgbox{font-family:inherit}
     const m=$('#storeMenu');m.innerHTML='';
     stores.forEach(s=>{const el=document.createElement('div');el.className='store-item';
       el.innerHTML=`<span class="dot" style="background:${sColor[s.status]}"></span><span class="meta"><b>${s.name}</b><span>${MK[s.mk]} · ${sText[s.status]} · 同步 ${s.sync}</span></span>${s.id===curStore?'<svg viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.4" style="width:15px;height:15px"><path d="M20 6L9 17l-5-5"/></svg>':''}`;
-      el.onclick=()=>{if(curStore!==s.id){curStore=s.id;resetChatCanvas(false);}syncStore();loadChatSessions(true);loadOpps();loadOptimize();loadCustomers();m.classList.remove('open');};m.appendChild(el);});
+      el.onclick=()=>{if(curStore!==s.id){curStore=s.id;resetChatCanvas(false);}syncStore();loadChatSessions(true);loadOpps();loadOptimize();loadCustomers();loadImportHistory();m.classList.remove('open');};m.appendChild(el);});
     const sep=document.createElement('div');sep.className='sep';m.appendChild(sep);
     const add=document.createElement('div');add.className='store-item';add.style.color='var(--accent-strong)';
     add.innerHTML='<span style="width:7px"></span><span class="meta"><b>＋ 新建店铺空间</b></span>';add.onclick=()=>{m.classList.remove('open');openAuth();};m.appendChild(add);
@@ -749,6 +771,7 @@ button.imgbox{font-family:inherit}
     kw:[String(nm).toLowerCase(),'best seller alternative','gift idea','durable '+ct]};}
 
   let selected=null, started=false, chatHistory=[], currentChatId=null;
+  const documentCache=new Map();
   const HELLO_HTML=$('#hello').outerHTML;
   const AV_A='<div class="av"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l6-6 4 4 8-8"/><path d="M21 7v5"/><path d="M16 7h5"/></svg></div>';
 
@@ -814,9 +837,9 @@ button.imgbox{font-family:inherit}
     const d=await r.json();currentChatId=d.id;loadChatSessions();return currentChatId;
   }
   async function saveChatMessage(role,content){
-    if(!currentChatId)return;
-    try{await fetch('/api/chat/sessions/'+encodeURIComponent(currentChatId)+'/messages',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({role,content})});loadChatSessions();}catch(e){}
+    if(!currentChatId)return null;
+    try{const r=await fetch('/api/chat/sessions/'+encodeURIComponent(currentChatId)+'/messages',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({role,content})});if(!r.ok)throw new Error('HTTP '+r.status);const d=await r.json();loadChatSessions();return d;}catch(e){return null;}
   }
   function resetChatCanvas(refreshList=true){
     inner.innerHTML=HELLO_HTML;started=false;selected=null;chatHistory=[];currentChatId=null;scrollDown();
@@ -836,7 +859,7 @@ button.imgbox{font-family:inherit}
       else{started=true;}
       messages.forEach(m=>{
         const content=String(m.content||'');
-        if(m.role==='user')addUser(content);else addAgent('<div class="bubble"><div>'+fmt(content)+'</div></div>');
+        if(m.role==='user')addUser(content);else addAgent(m.document?documentBubble(content,m.document):'<div class="bubble"><div>'+fmt(content)+'</div></div>');
         chatHistory.push({role:m.role,content:content.slice(0,4000)});
       });
       if(chatHistory.length>10)chatHistory=chatHistory.slice(-10);
@@ -848,11 +871,11 @@ button.imgbox{font-family:inherit}
     }
   }
   function remember(role,content,persist=true){
-    const text=String(content||'').replace(/\s+/g,' ').trim();
-    if(!text)return Promise.resolve();
+    const raw=String(content||'').trim(),text=raw.replace(/\s+/g,' ').trim();
+    if(!raw)return Promise.resolve(null);
     chatHistory.push({role,content:text.slice(0,4000)});
     if(chatHistory.length>10)chatHistory=chatHistory.slice(-10);
-    return persist?saveChatMessage(role,text.slice(0,4000)):Promise.resolve();
+    return persist?saveChatMessage(role,raw.slice(0,12000)):Promise.resolve(null);
   }
 
   function thinking(label,then){
@@ -1061,6 +1084,66 @@ button.imgbox{font-family:inherit}
     flushAll();
     return '<div class="md">'+out.join('')+'</div>';
   }
+  const documentTypeLabels={listing_copy:'Listing 文案',pricing_sheet:'调价清单',competitor_report:'竞品报告'};
+  function documentKind(agent,prompt,reply){
+    if(agent==='listing')return 'listing_copy';
+    if((agent==='teardown'||agent==='monitor'))return 'competitor_report';
+    if(agent==='ads'&&/(调价|竞价|出价|价格|bid|cpc|acos|清单)/i.test(String(prompt||'')+' '+String(reply||'')))return 'pricing_sheet';
+    return '';
+  }
+  function documentTitle(type,prompt){
+    const label=documentTypeLabels[type]||'业务文档',subject=String(prompt||'').replace(/\s+/g,' ').trim().slice(0,48);
+    return subject?label+' · '+subject:label;
+  }
+  async function createDocumentForReply(agent,prompt,content,messageId){
+    const docType=documentKind(agent,prompt,content);
+    if(!docType||!currentChatId||!messageId)return null;
+    try{const r=await fetch('/api/documents',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+      doc_type:docType,title:documentTitle(docType,prompt),content,session_id:currentChatId,source_message_id:messageId})});
+      if(!r.ok)throw new Error('HTTP '+r.status);return await r.json();
+    }catch(e){console.warn('document create failed',e);return null;}
+  }
+  function documentBubble(content,doc,badge=''){
+    if(!doc)return '<div class="bubble"><div>'+fmt(content)+'</div>'+badge+'</div>';
+    documentCache.set(doc.id,{...doc,content:String(doc.content||content||'')});
+    return `<div class="bubble doc-bubble" data-doc-id="${esc(doc.id)}">
+      <div class="doc-head"><span class="pill accent">${esc(documentTypeLabels[doc.doc_type]||'业务文档')}</span><span class="doc-title">${esc(doc.title||'未命名文档')}</span><span class="pill mute doc-version">v${esc(doc.current_version||1)}</span>
+        <div class="doc-actions"><button class="btn ghost doc-edit">编辑</button><button class="btn ghost doc-copy">复制</button><button class="btn ghost doc-export">导出 Markdown</button><button class="btn ghost doc-history">版本</button></div></div>
+      <div class="doc-rendered">${fmt(doc.content||content)}</div>
+      <div class="doc-editor"><input class="doc-title-input" type="text" value="${esc(doc.title||'未命名文档')}"><textarea class="doc-content-input"></textarea><div class="doc-editor-actions"><button class="btn doc-cancel">取消</button><button class="btn primary doc-save">保存新版本</button></div></div>
+      <div class="doc-versions"></div>${badge}</div>`;
+  }
+  function refreshDocumentCard(card,doc){
+    documentCache.set(doc.id,doc);card.querySelector('.doc-title').textContent=doc.title;
+    card.querySelector('.doc-version').textContent='v'+doc.current_version;
+    card.querySelector('.doc-rendered').innerHTML=fmt(doc.content);
+    card.querySelector('.doc-rendered').style.display='block';card.querySelector('.doc-editor').style.display='none';
+  }
+  function beginDocumentEdit(card){
+    const doc=documentCache.get(card.dataset.docId);if(!doc)return;
+    card.querySelector('.doc-title-input').value=doc.title;card.querySelector('.doc-content-input').value=doc.content;
+    card.querySelector('.doc-rendered').style.display='none';card.querySelector('.doc-editor').style.display='block';
+  }
+  async function saveDocumentEdit(card){
+    const id=card.dataset.docId,btn=card.querySelector('.doc-save');btn.disabled=true;btn.textContent='保存中…';
+    try{const r=await fetch('/api/documents/'+encodeURIComponent(id),{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+      title:card.querySelector('.doc-title-input').value,content:card.querySelector('.doc-content-input').value})});
+      if(!r.ok)throw new Error((await r.json().catch(()=>({}))).detail||('HTTP '+r.status));const doc=await r.json();refreshDocumentCard(card,doc);toast('已保存为 v'+doc.current_version);
+    }catch(e){toast('保存失败：'+String(e.message||e));}finally{btn.disabled=false;btn.textContent='保存新版本';}
+  }
+  async function copyDocument(card){
+    const doc=documentCache.get(card.dataset.docId);if(!doc)return;const text=doc.title+'\n\n'+doc.content;
+    try{await navigator.clipboard.writeText(text);}catch(e){const area=document.createElement('textarea');area.value=text;area.style.position='fixed';area.style.opacity='0';document.body.appendChild(area);area.select();document.execCommand('copy');area.remove();}
+    toast('文档已复制');
+  }
+  async function showDocumentVersions(card){
+    const box=card.querySelector('.doc-versions');if(box.style.display==='block'){box.style.display='none';return;}
+    box.style.display='block';box.innerHTML='<div style="color:var(--dim);font-size:12px">正在读取版本…</div>';
+    try{const r=await fetch('/api/documents/'+encodeURIComponent(card.dataset.docId)+'/versions');if(!r.ok)throw new Error('HTTP '+r.status);const d=await r.json();
+      box.innerHTML=(d.items||[]).map((v,i)=>`<div class="doc-version-row"><b>v${esc(v.version)}</b><span class="time">${esc(v.created_at||'')}</span><button class="btn ghost sm doc-version-open" data-i="${i}">预览</button></div>`).join('')||'暂无版本';
+      box.querySelectorAll('.doc-version-open').forEach(btn=>btn.onclick=()=>{const v=d.items[+btn.dataset.i];card.querySelector('.doc-rendered').innerHTML=fmt(v.content);card.querySelector('.doc-rendered').style.display='block';card.querySelector('.doc-editor').style.display='none';toast('正在预览 v'+v.version+'；点击当前版本可恢复');});
+    }catch(e){box.textContent='版本加载失败';}
+  }
   async function respondReal(text, historyOverride=null){
     const agent=chosenAgent(text);
     const history=historyOverride||chatHistory.slice(-8);
@@ -1098,10 +1181,11 @@ button.imgbox{font-family:inherit}
           }else if(evt.type==='final'){
             gotFinal=true;
             const full=evt.reply||raw;
-            remember('assistant',full);
+            const saved=await remember('assistant',full);
+            const doc=await createDocumentForReply(agent,text,full,saved&&saved.id);
             const badge=toolsSeen.length?`<div class="step" style="margin-top:8px;opacity:.7">经 ${AGENT_CN[agent]} · 调用工具：${esc(toolsSeen.join(', '))}</div>`:'';
-            if(ans){ans.querySelector('.bubble').innerHTML='<div>'+fmt(full)+'</div>'+badge;}
-            else{if(think)think.remove();addAgent('<div class="bubble"><div>'+fmt(full)+'</div>'+badge+'</div>');}
+            if(ans){ans.querySelector('.body').innerHTML=documentBubble(full,doc,badge);}
+            else{if(think)think.remove();addAgent(documentBubble(full,doc,badge));}
             scrollDown();
           }else if(evt.type==='error'){
             if(ans)ans.querySelector('.bubble').innerHTML='<div>⚠️ 出错：'+esc(evt.error)+'</div>';
@@ -1114,10 +1198,11 @@ button.imgbox{font-family:inherit}
       if(ans)ans.remove();if(think)think.remove();
       try{const r=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:storeContext()+text,agent,history})});
         if(!r.ok)throw new Error('HTTP '+r.status);const d=await r.json();
-        remember('assistant',d.reply);
+        const saved=await remember('assistant',d.reply);
+        const doc=await createDocumentForReply(agent,text,d.reply,saved&&saved.id);
         const tools=[...new Set((d.steps||[]).flatMap(s=>s.tools||[]))];
         const badge=tools.length?`<div class="step" style="margin-top:8px;opacity:.7">兼容模式 · 调用工具：${esc(tools.join(', '))}</div>`:'';
-        addAgent('<div class="bubble"><div>'+fmt(d.reply)+'</div>'+badge+'</div>');
+        addAgent(documentBubble(d.reply,doc,badge));
       }catch(fallbackError){addAgent('<div class="bubble"><div>⚠️ 后端调用失败：'+esc(String(fallbackError.message||fallbackError))+'</div></div>');}}
   }
   /* ---- 选品：调结构化接口出可「放入机会上新」的机会卡（B0） ---- */
@@ -1172,6 +1257,14 @@ button.imgbox{font-family:inherit}
   $('#chatInp').addEventListener('input',autosize);
   // delegated clicks for chips / starters / pick / addOpp
   document.addEventListener('click',e=>{
+    const docCard=e.target.closest('.doc-bubble');
+    if(docCard&&e.target.closest('.doc-edit')){beginDocumentEdit(docCard);return;}
+    if(docCard&&e.target.closest('.doc-cancel')){refreshDocumentCard(docCard,documentCache.get(docCard.dataset.docId));return;}
+    if(docCard&&e.target.closest('.doc-save')){saveDocumentEdit(docCard);return;}
+    if(docCard&&e.target.closest('.doc-copy')){copyDocument(docCard);return;}
+    if(docCard&&e.target.closest('.doc-export')){window.location.href='/api/documents/'+encodeURIComponent(docCard.dataset.docId)+'/export';return;}
+    if(docCard&&e.target.closest('.doc-history')){showDocumentVersions(docCard);return;}
+    if(docCard&&e.target.closest('.doc-version')){refreshDocumentCard(docCard,documentCache.get(docCard.dataset.docId));return;}
     const q=e.target.closest('[data-q]');if(q){submitInput(q.dataset.q);return;}
     const pick=e.target.closest('.pick');if(pick){selected=pick.dataset.k;submitInput('就做「'+OPP[pick.dataset.k].name+'」，帮我生成完整 Listing 素材');return;}
     const add=e.target.closest('.addOpp');if(add){addToOpps(add.dataset.k);return;}
@@ -1329,6 +1422,24 @@ button.imgbox{font-family:inherit}
   $$('#importTabs .tab').forEach(t=>t.onclick=()=>{$$('#importTabs .tab').forEach(x=>x.classList.remove('active'));t.classList.add('active');
     $('#tab-amazon').style.display=t.dataset.t==='amazon'?'':'none';$('#tab-excel').style.display=t.dataset.t==='excel'?'':'none';});
   $('#syncBtn').onclick=()=>toast('尚未配置 Amazon SP-API 授权，请使用 Excel 导入真实报表');
+  const importTypeLabels={ads_search_terms:'广告搜索词',orders:'订单',inventory:'库存',competitors:'竞品',unknown:'未识别'};
+  function formatImportTime(value){
+    if(!value)return '—';
+    const raw=String(value).trim(),date=new Date(raw.includes('T')?raw:raw.replace(' ','T')+'Z');
+    return Number.isNaN(date.getTime())?esc(raw):date.toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
+  }
+  function renderImportHistory(items=[],error=''){
+    const tbl=$('#histTbl');if(!tbl)return;
+    tbl.innerHTML='<tr><th>来源</th><th>数据类型</th><th>行数</th><th>时间</th><th>状态</th></tr>';
+    if(error){const row=tbl.insertRow(-1);row.innerHTML=`<td colspan="5" style="text-align:center;color:var(--crit)">${esc(error)}</td>`;return;}
+    if(!items.length){const row=tbl.insertRow(-1);row.innerHTML='<td colspan="5" style="text-align:center;color:var(--dim)">暂无导入记录</td>';return;}
+    items.forEach(item=>{const completed=item.status==='completed',row=tbl.insertRow(-1);
+      row.innerHTML=`<td title="${esc(item.filename||'')}"><span class="pill amber"><span class="d"></span>Excel</span></td><td>${esc(importTypeLabels[item.report_type]||item.report_type||'未识别')}</td><td class="mono">${esc(item.row_count??0)}</td><td class="tnum">${formatImportTime(item.created_at)}</td><td><span class="pill ${completed?'good':'crit'}">${completed?'完成':'失败'}</span></td>`;});
+  }
+  async function loadImportHistory(){
+    try{const r=await fetch('/api/imports');if(!r.ok)throw new Error('HTTP '+r.status);const d=await r.json();renderImportHistory(d.items||[]);}
+    catch(e){renderImportHistory([],'导入历史加载失败：'+String(e.message||e));}
+  }
   let importPreview=null;
   const mapFields=[['','忽略'],['sku','SKU'],['asin','ASIN'],['title','商品标题'],['brand','品牌'],['price','价格'],['rating','评分'],['review_count','评论数'],['campaign','广告活动'],['search_term','搜索词'],['impressions','曝光量'],['clicks','点击量'],['spend','花费'],['sales','销售额'],['orders','订单数'],['quantity','数量'],['stock','库存'],['order_id','订单号'],['buyer','买家/收件人'],['purchase_date','下单时间']];
   $('#fileInp').onchange=async e=>{const file=e.target.files[0];if(!file)return;
@@ -1351,7 +1462,7 @@ button.imgbox{font-family:inherit}
     status.textContent=`正在完整导入 ${importPreview.row_count} 行数据… 大文件可能需要几十秒，请不要关闭页面。`;
     try{const r=await fetch('/api/imports',{method:'POST',body:fd});if(!r.ok)throw new Error((await r.json()).detail||('HTTP '+r.status));const d=await r.json();
       $('#mapping').style.display='none';status.style.color='var(--good)';status.textContent=`导入完成：${d.row_count} 行已入库。`;
-      const row=$('#histTbl').insertRow(1);row.innerHTML=`<td><span class="pill amber"><span class="d"></span>Excel</span></td><td>${esc(d.report_type)}</td><td class="mono">${d.row_count}</td><td class="tnum">刚刚</td><td><span class="pill good">完成</span></td>`;toast(`Excel 导入完成 · ${d.row_count} 行`);
+      loadImportHistory();toast(`Excel 导入完成 · ${d.row_count} 行`);
       loadOptimize();loadCustomers();
     }catch(err){status.style.color='var(--crit)';status.textContent='导入失败：'+String(err.message||err);toast('导入失败：'+String(err.message||err));}finally{$('#confirmMap').disabled=false;}};
 
@@ -1513,7 +1624,7 @@ button.imgbox{font-family:inherit}
         curStore=stores[0].id;syncStore();
       }
     }).catch(()=>{}).finally(()=>{
-      loadChatSessions();loadOpps();loadOptimize();loadCustomers();
+      loadChatSessions();loadOpps();loadOptimize();loadCustomers();loadImportHistory();
     });
 
     /* 接后端元信息：填智能体选择器 + 真实展示名 + 引擎信息 */

@@ -88,6 +88,28 @@ def init_db() -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_chat_messages_session
               ON chat_messages(session_id, id);
+            CREATE TABLE IF NOT EXISTS documents (
+              id TEXT PRIMARY KEY, user_id TEXT NOT NULL, store_id TEXT NOT NULL,
+              session_id TEXT, source_message_id INTEGER,
+              doc_type TEXT NOT NULL, title TEXT NOT NULL, content TEXT NOT NULL,
+              current_version INTEGER NOT NULL DEFAULT 1,
+              created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              FOREIGN KEY(user_id) REFERENCES users(id), FOREIGN KEY(store_id) REFERENCES stores(id),
+              FOREIGN KEY(session_id) REFERENCES chat_sessions(id) ON DELETE SET NULL,
+              FOREIGN KEY(source_message_id) REFERENCES chat_messages(id) ON DELETE SET NULL
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_documents_source_message
+              ON documents(source_message_id) WHERE source_message_id IS NOT NULL;
+            CREATE INDEX IF NOT EXISTS idx_documents_scope
+              ON documents(user_id, store_id, updated_at DESC);
+            CREATE TABLE IF NOT EXISTS document_versions (
+              id INTEGER PRIMARY KEY AUTOINCREMENT, document_id TEXT NOT NULL,
+              version INTEGER NOT NULL, title TEXT NOT NULL, content TEXT NOT NULL,
+              created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              FOREIGN KEY(document_id) REFERENCES documents(id) ON DELETE CASCADE,
+              UNIQUE(document_id, version)
+            );
             CREATE TABLE IF NOT EXISTS audit_log (
               id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL, store_id TEXT,
               action TEXT NOT NULL, detail_json TEXT NOT NULL DEFAULT '{}',
