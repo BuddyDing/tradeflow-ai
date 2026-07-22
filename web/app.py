@@ -29,7 +29,7 @@ from pydantic import BaseModel, Field  # noqa: E402
 from config.settings import settings  # noqa: E402
 from tradeflow import registry  # noqa: E402
 from tradeflow.agent.loop import AgentStep  # noqa: E402
-from tradeflow.compose import compose_system_prompt  # noqa: E402
+from tradeflow.compose import compose_system_prompt, load_persona, load_skills  # noqa: E402
 from tradeflow.factory import build_agent  # noqa: E402
 from tradeflow.llm.base import Message, Role  # noqa: E402
 from tradeflow.tools.compliance import compliance_gate  # noqa: E402
@@ -426,7 +426,31 @@ def _import_data_scope_directive(message: str, history: List[ChatTurn]) -> str:
     return directives[scope]
 
 
-def _build_import_data_agent(user_id: str, store_id: str, observer=None):
+def _ads_expert_sop() -> str:
+    """#4 广告优化师的人设 + SOP（来自 prompts/ads.md 与 skills/ads/），供广告类
+    导入分析复用其专业判断框架。附一段护栏：导入报表里常缺规则表/成本表/结算数据，
+    此时按三分类的定性逻辑判断，但不硬套具体阈值倍数，也不声称明确亏损。"""
+    persona = load_persona("ads")
+    skills = load_skills("ads")
+    if not (persona or skills):
+        return ""
+    parts = ["\n\n# 广告优化专业判断（#4 PPC 优化师能力）",
+             "本轮分析广告/搜索词数据时，套用下面的专业框架，但严格以工具返回的导入数据为准。"]
+    if persona:
+        parts.append(persona)
+    if skills:
+        parts.append(skills)
+    parts.append(
+        "重要护栏：上面 SOP 提到的规则阈值表（data/ads/调词规则.csv）、SKU 成本表、"
+        "结算回款率在导入报表里通常不存在。缺这些时：用三分类（垃圾词/好词/潜力长尾词/观察）"
+        "的定性逻辑判断方向，但不要引用或编造具体阈值倍数与盈亏线数值，明确标注“缺成本/结算"
+        "数据，盈亏线无法精确计算”；只基于花费、销售额、订单、点击、ACOS 给优先级与动作方向，"
+        "不用“花费−销售额”或“ACOS>100%”直接声称明确亏损。"
+    )
+    return "\n\n".join(parts)
+
+
+def _build_import_data_agent(user_id: str, store_id: str, observer=None, scope: str = "auto"):
     prompt = (
         "你是 TradeFlow-AI 的通用导入数据分析智能体。用户上传的 Excel/CSV 已经入库，"
         "你不能假设只分析某一种文件，也不能声称没有收到文件，除非工具返回确实没有数据。\n\n"
@@ -443,6 +467,9 @@ def _build_import_data_agent(user_id: str, store_id: str, observer=None):
         "可以说 ACOS 高、广告效率风险高、花费高于广告归因销售额，但不要说明确亏损。"
         "回答要贴近用户 query；用户追问“第二个/继续/为什么”时，要结合最近对话上下文理解指代。"
     )
+    # 广告场景注入 #4 的专业 SOP，让分析带上 PPC 优化师的判断框架（B-顺路）。
+    if scope == "ads_search_terms":
+        prompt += _ads_expert_sop()
     return build_agent(
         system_prompt=prompt,
         tools=build_import_tools(user_id, store_id),
@@ -704,7 +731,8 @@ def chat(body: ChatIn, x_tradeflow_user: str = Depends(auth.current_user),
 
     has_imports = bool(list_imports(x_tradeflow_user, x_tradeflow_store))
     if _is_import_data_query(body.message, body.history, has_imports):
-        result = _build_import_data_agent(x_tradeflow_user, x_tradeflow_store, observe).run(
+        scope = _import_data_scope(body.message, body.history)
+        result = _build_import_data_agent(x_tradeflow_user, x_tradeflow_store, observe, scope=scope).run(
             _import_data_user_input(body.message, body.history))
         return ChatOut(
             reply=_sanitize_imported_ads_reply(result.output),
@@ -749,7 +777,9 @@ async def chat_stream(body: ChatIn, x_tradeflow_user: str = Depends(auth.current
             has_imports = bool(list_imports(x_tradeflow_user, x_tradeflow_store))
             is_import_query = _is_import_data_query(body.message, body.history, has_imports)
             if is_import_query:
-                agent = _build_import_data_agent(x_tradeflow_user, x_tradeflow_store, lambda _step: None)
+                scope = _import_data_scope(body.message, body.history)
+                agent = _build_import_data_agent(x_tradeflow_user, x_tradeflow_store,
+                                                 lambda _step: None, scope=scope)
                 user_input = _import_data_user_input(body.message, body.history)
                 history = None
             else:
