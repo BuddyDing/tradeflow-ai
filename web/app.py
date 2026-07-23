@@ -205,7 +205,19 @@ def _agent_list() -> List[Dict[str, str]]:
                          for s in registry.list_specs()]
 
 
-def _build_agent(agent_key: str, observer):
+def _has_import(user_id: str, store_id: str, report_type: str) -> bool:
+    if not user_id:
+        return False
+    return any(i.get("report_type") == report_type
+               for i in list_imports(user_id, store_id))
+
+
+def _build_agent(agent_key: str, observer, user_id: str = "", store_id: str = ""):
+    # 打通：直接选了 #4 广告专家、且数据库里有导入的广告数据时，读导入数据而非磁盘
+    # 样例——复用注入了 #4 SOP 的导入分析智能体（scope=ads_search_terms）。没有导入
+    # 数据才回退到 registry 的磁盘工具（此时工具已在结果里硬标注“示例数据”）。
+    if agent_key == "ads" and _has_import(user_id, store_id, "ads_search_terms"):
+        return _build_import_data_agent(user_id, store_id, observer, scope="ads_search_terms")
     if agent_key in registry.REGISTRY:
         return registry.build(agent_key, observer=observer)
     return build_agent(observer=observer)
@@ -742,7 +754,7 @@ def chat(body: ChatIn, x_tradeflow_user: str = Depends(auth.current_user),
         )
 
     # Fresh agent per request → clean, single-turn conversations (no shared state).
-    agent = _build_agent(body.agent, observe)
+    agent = _build_agent(body.agent, observe, x_tradeflow_user, x_tradeflow_store)
     result = agent.run(body.message, history=_to_messages(body.history))
     return ChatOut(
         reply=result.output,
@@ -783,7 +795,9 @@ async def chat_stream(body: ChatIn, x_tradeflow_user: str = Depends(auth.current
                 user_input = _import_data_user_input(body.message, body.history)
                 history = None
             else:
-                agent = _build_agent(body.agent, lambda _step: None)  # 流式下不用 observer
+                # 流式下不用 observer
+                agent = _build_agent(body.agent, lambda _step: None,
+                                     x_tradeflow_user, x_tradeflow_store)
                 user_input = body.message
                 history = _to_messages(body.history)
             for kind, payload in agent.run_stream(user_input, history=history):
