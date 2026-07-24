@@ -8,6 +8,7 @@ import json
 import re
 import uuid
 from collections.abc import Iterable, Iterator
+from pathlib import Path
 from typing import Any
 
 from web.database import audit, connect
@@ -15,6 +16,14 @@ from web.database import audit, connect
 HEADER_SCAN_ROWS = 30
 PREVIEW_ROWS = 8
 INSERT_CHUNK_SIZE = 1000
+# 一键加载示例数据要覆盖两条链路：优化建议只吃 ads_search_terms 类型的报表；
+# 机会上新（suggest_opportunities）在实时查询系统不可用时，退回吃 competitors 类型
+# 导入（competitor_rows()，要求有 asin 字段）。只导广告报表的话，"发现机会商品"
+# 那个重试按钮在没有查询系统在线时还是会一样地失败——两个样例文件都要导。
+SAMPLE_ADS_CSV = Path(__file__).resolve().parents[1] / "data" / "ads" / "搜索词报告_样例.csv"
+SAMPLE_COMPETITORS_CSV = Path(__file__).resolve().parents[1] / "data" / "teardown" / "爆款ASIN清单.csv"
+SAMPLE_FILES = (SAMPLE_ADS_CSV, SAMPLE_COMPETITORS_CSV)
+SAMPLE_FILENAMES = {p.name for p in SAMPLE_FILES}
 
 ALIASES = {
     "sku": {"sku", "seller sku", "商家sku", "卖家sku"},
@@ -167,12 +176,32 @@ def save_import(user_id: str, store_id: str, filename: str, columns: list[str],
                 rows: list[dict[str, Any]], mapping: dict[str, str]) -> dict[str, Any]:
     batch_id = f"imp_{uuid.uuid4().hex[:12]}"
     report_type = detect_report_type(mapping)
+    # status 一直是 'completed'——list_imported_files/aggregate_imported_file 这些通用
+    # 导入分析工具，以及 has_imports 判断，都只看 status='completed'，不关心是否命中了
+    # 四个已知报表类型之一；"识别不出具体类型"不等于"导入失败"，用户仍应能通过聊天让
+    # 智能体去分析这份文件。report_type='unknown' 只影响 ads_overview/customer_overview
+    # 这类按类型自动取"最新一批"的专用看板，不能反过来把整个导入标记成失败状态。
+    status = "completed"
+    error = None
+    if report_type == "unknown":
+        fields = set(mapping.values())
+        ads_required = {"campaign", "search_term", "clicks", "spend"}
+        labels = {"campaign": "广告活动", "search_term": "搜索词", "clicks": "点击量", "spend": "花费"}
+        overlap = fields & ads_required
+        if overlap:
+            missing = sorted(ads_required - fields)
+            error = ("看起来像广告搜索词报表，但缺少字段映射："
+                      + "、".join(f"{field}（{labels[field]}）" for field in missing))
+        else:
+            error = "未能识别为广告搜索词/订单/库存/竞品报表中的任一种，可在「优化建议」等看板外通过对话直接分析这份文件。"
     row_count = len(rows)
     with connect() as db:
         db.execute(
-            "INSERT INTO import_batches(id,user_id,store_id,filename,report_type,status,row_count,columns_json,mapping_json) VALUES(?,?,?,?,?,'completed',?,?,?)",
-            (batch_id, user_id, store_id, filename, report_type, row_count,
-             json.dumps(columns, ensure_ascii=False), json.dumps(mapping, ensure_ascii=False)),
+            "INSERT INTO import_batches(id,user_id,store_id,filename,report_type,status,row_count,columns_json,mapping_json,error) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (batch_id, user_id, store_id, filename, report_type, status, row_count,
+             json.dumps(columns, ensure_ascii=False), json.dumps(mapping, ensure_ascii=False),
+             error),
         )
         chunk = []
         for row in rows:
@@ -189,38 +218,58 @@ def save_import(user_id: str, store_id: str, filename: str, columns: list[str],
                 "INSERT INTO imported_rows(batch_id,user_id,store_id,row_json) VALUES(?,?,?,?)",
                 chunk,
             )
-    audit(user_id, store_id, "import.completed", {"batch_id": batch_id, "rows": row_count})
+    audit(user_id, store_id, "import.completed",
+          {"batch_id": batch_id, "rows": row_count, "report_type": report_type, "status": status})
     return {"id": batch_id, "filename": filename, "report_type": report_type,
-            "row_count": row_count, "status": "completed"}
+            "row_count": row_count, "status": status, "error": error}
+
+
+def save_sample_import(user_id: str, store_id: str) -> dict[str, Any]:
+    batches = []
+    for path in SAMPLE_FILES:
+        columns, rows = parse_upload(path.name, path.read_bytes())
+        mapping = suggest_mapping(columns)
+        batches.append(save_import(user_id, store_id, path.name, columns, rows, mapping))
+    return {"batches": batches, "row_count": sum(b["row_count"] for b in batches)}
 
 
 def list_imports(user_id: str, store_id: str) -> list[dict[str, Any]]:
     with connect() as db:
         rows = db.execute(
-            "SELECT id,filename,report_type,status,row_count,created_at FROM import_batches WHERE user_id=? AND store_id=? ORDER BY created_at DESC",
+            "SELECT id,filename,report_type,status,row_count,error,created_at FROM import_batches "
+            "WHERE user_id=? AND store_id=? ORDER BY created_at DESC, rowid DESC",
             (user_id, store_id),
         ).fetchall()
     return [dict(r) for r in rows]
 
 
-def _latest_imported_rows(user_id: str, store_id: str, report_type: str) -> list[dict[str, Any]]:
+def _latest_imported_batch(
+        user_id: str, store_id: str, report_type: str
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
     with connect() as db:
         batch = db.execute(
-            "SELECT id FROM import_batches WHERE user_id=? AND store_id=? AND report_type=? "
-            "AND status='completed' AND row_count>0 ORDER BY created_at DESC, id DESC LIMIT 1",
+            "SELECT id,filename,created_at FROM import_batches "
+            "WHERE user_id=? AND store_id=? AND report_type=? "
+            "AND status='completed' AND row_count>0 ORDER BY created_at DESC, rowid DESC LIMIT 1",
             (user_id, store_id, report_type),
         ).fetchone()
         if not batch:
-            return []
+            return [], None
         rows = db.execute(
             "SELECT row_json FROM imported_rows WHERE user_id=? AND store_id=? AND batch_id=?",
             (user_id, store_id, batch["id"]),
         ).fetchall()
-    return [json.loads(r[0]) for r in rows]
+    source = {"filename": batch["filename"], "imported_at": batch["created_at"]}
+    return [json.loads(r[0]) for r in rows], source
+
+
+def _latest_imported_rows(user_id: str, store_id: str, report_type: str) -> list[dict[str, Any]]:
+    rows, _ = _latest_imported_batch(user_id, store_id, report_type)
+    return rows
 
 
 def ads_overview(user_id: str, store_id: str) -> dict[str, Any]:
-    data = _latest_imported_rows(user_id, store_id, "ads_search_terms")
+    data, source = _latest_imported_batch(user_id, store_id, "ads_search_terms")
     if not data:
         return {"items": [], "error": "请先导入真实广告搜索词报表"}
     campaigns: dict[str, dict[str, Any]] = {}
@@ -242,7 +291,7 @@ def ads_overview(user_id: str, store_id: str) -> dict[str, Any]:
         c["severity"] = _ad_severity(c)
         c["recommendations"] = _ad_recommendations(c)
         items.append(c)
-    return {"items": sorted(items, key=lambda x: -x["spend"]), "source": "imported_report",
+    return {"items": sorted(items, key=lambda x: -x["spend"]), "source": source,
             "row_count": len(data)}
 
 
