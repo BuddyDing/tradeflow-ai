@@ -33,7 +33,7 @@ def _select_batch(user_id: str, store_id: str, batch_id: str = "",
         row = db.execute(
             "SELECT id,filename,report_type,row_count,columns_json,mapping_json,created_at "
             f"FROM import_batches WHERE {' AND '.join(where)} "
-            "ORDER BY created_at DESC, id DESC LIMIT 1",
+            "ORDER BY created_at DESC, rowid DESC LIMIT 1",
             params,
         ).fetchone()
     return dict(row) if row else None
@@ -95,7 +95,7 @@ def build_import_tools(user_id: str, store_id: str):
             rows = db.execute(
                 "SELECT id,filename,report_type,row_count,created_at,columns_json,mapping_json "
                 "FROM import_batches WHERE user_id=? AND store_id=? AND status='completed' "
-                "ORDER BY created_at DESC, id DESC LIMIT 20",
+                "ORDER BY created_at DESC, rowid DESC LIMIT 20",
                 (user_id, store_id),
             ).fetchall()
         items = []
