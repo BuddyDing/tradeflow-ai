@@ -647,12 +647,15 @@ def remove_opportunity(opp_id: str, x_tradeflow_user: str = Depends(auth.current
 
 
 @app.post("/api/imports/preview")
-async def import_preview(file: UploadFile = File(...)) -> Dict[str, Any]:
+async def import_preview(file: UploadFile = File(...),
+                         x_tradeflow_user: str = Depends(auth.current_user),
+                         x_tradeflow_store: str = Depends(_current_store)) -> Dict[str, Any]:
     content = await file.read()
     if len(content) > 80 * 1024 * 1024:
         raise HTTPException(status_code=413, detail="文件不能超过 80MB")
     try:
-        preview = parse_upload_preview(file.filename or "upload.xlsx", content)
+        preview = parse_upload_preview(file.filename or "upload.xlsx", content,
+                                       x_tradeflow_user, x_tradeflow_store)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"filename": file.filename, **preview}

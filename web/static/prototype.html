@@ -1330,17 +1330,26 @@ button.imgbox{font-family:inherit}
     $('#tab-amazon').style.display=t.dataset.t==='amazon'?'':'none';$('#tab-excel').style.display=t.dataset.t==='excel'?'':'none';});
   $('#syncBtn').onclick=()=>toast('尚未配置 Amazon SP-API 授权，请使用 Excel 导入真实报表');
   let importPreview=null;
-  const mapFields=[['','忽略'],['sku','SKU'],['asin','ASIN'],['title','商品标题'],['brand','品牌'],['price','价格'],['rating','评分'],['review_count','评论数'],['campaign','广告活动'],['search_term','搜索词'],['impressions','曝光量'],['clicks','点击量'],['spend','花费'],['sales','销售额'],['orders','订单数'],['quantity','数量'],['stock','库存'],['order_id','订单号'],['buyer','买家/收件人'],['purchase_date','下单时间']];
+  const mapFields=[['','忽略'],['sku','SKU'],['asin','ASIN'],['title','商品标题'],['brand','品牌'],['price','价格'],['rating','评分'],['review_count','评论数'],
+    ['campaign','广告活动'],['search_term','搜索词'],['impressions','曝光量'],['clicks','点击量'],['spend','花费'],['sales','销售额'],['orders','订单数'],['quantity','数量'],
+    ['stock','库存'],['order_id','订单号'],['buyer','买家/收件人'],['purchase_date','下单时间'],
+    ['txn_type','交易类型(订单/退款)'],['net_amount','平台费后到手'],['selling_fees','销售佣金'],['fba_fees','FBA费用'],
+    ['purchase_cost','采购成本'],['freight','头程运费'],['unit_cost','单件总成本']];
   $('#fileInp').onchange=async e=>{const file=e.target.files[0];if(!file)return;
     const status=$('#uploadStatus');status.style.display='block';status.style.color='var(--dim)';status.textContent=`正在上传并快速预览 ${file.name}… 大文件会先读取表头和样例。`;
     const fd=new FormData();fd.append('file',file);$('#fileName').textContent=file.name;$('#fileMeta').textContent='';
     try{const r=await fetch('/api/imports/preview',{method:'POST',body:fd});if(!r.ok)throw new Error((await r.json()).detail||('HTTP '+r.status));
       importPreview=await r.json();$('#fileMeta').textContent=` · ${importPreview.row_count} 行 · ${importPreview.columns.length} 列`;
-      status.style.color='var(--good)';status.textContent=`预览完成：${importPreview.row_count} 行、${importPreview.columns.length} 列，请确认字段映射。确认后再完整入库。`;
       $('#mapping').style.display='block';
       const tbl=$('#mappingTbl');tbl.innerHTML='<tr><th>Excel 列</th><th>示例值</th><th>映射字段</th></tr>';
+      let unmapped=0;
       importPreview.columns.forEach(c=>{const tr=tbl.insertRow(-1),example=(importPreview.preview[0]||{})[c]??'';
-        tr.innerHTML=`<td class="mono">${esc(c)}</td><td>${esc(String(example))}</td><td><select data-col="${esc(c)}">${mapFields.map(([v,l])=>`<option value="${v}"${importPreview.mapping[c]===v?' selected':''}>${l}</option>`).join('')}</select></td>`;});
+        const mapped=importPreview.mapping[c];if(!mapped){unmapped++;tr.style.background='rgba(217,164,60,.14)';}
+        const opts=mapFields.map(([v,l])=>`<option value="${v}"${mapped===v?' selected':''}>${l}</option>`).join('');
+        const hint=mapped?'':' <span style="color:#c9820a;font-size:12px;white-space:nowrap">⚠ 未识别，请指认</span>';
+        tr.innerHTML=`<td class="mono">${esc(c)}</td><td>${esc(String(example))}</td><td><select data-col="${esc(c)}">${opts}</select>${hint}</td>`;});
+      status.style.color=unmapped?'#c9820a':'var(--good)';
+      status.textContent=unmapped?`预览完成：${importPreview.row_count} 行、${importPreview.columns.length} 列，其中 ${unmapped} 列未自动识别（已高亮），请手动指认或设为「忽略」后再确认入库。`:`预览完成：${importPreview.row_count} 行、${importPreview.columns.length} 列，字段已全部识别，请确认后入库。`;
     }catch(err){const message=String(err.message||err);status.style.color='var(--crit)';status.textContent='解析失败：'+message;toast('解析失败：'+message);$('#mapping').style.display='none';}};
   $('#cancelMap').onclick=()=>{$('#mapping').style.display='none';$('#uploadStatus').style.display='none';$('#fileInp').value='';};
   $('#confirmMap').onclick=async()=>{const file=$('#fileInp').files[0];if(!file||!importPreview)return;

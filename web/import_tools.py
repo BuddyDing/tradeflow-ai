@@ -19,6 +19,16 @@ def _num(value: Any) -> Optional[float]:
         return None
 
 
+def _txn_kind(value: Any) -> str:
+    """把交易类型值归一到 order/refund/other，兼容中英文报表（Order/订单、Refund/退款）。"""
+    s = str(value or "").strip().lower()
+    if s in ("order", "订单", "shipment", "销售", "销售订单"):
+        return "order"
+    if "refund" in s or "退款" in s or "退货" in s:
+        return "refund"
+    return "other"
+
+
 def _select_batch(user_id: str, store_id: str, batch_id: str = "",
                   report_type: str = ""):
     where = ["user_id=?", "store_id=?", "status='completed'", "row_count>0"]
@@ -229,12 +239,13 @@ def build_import_tools(user_id: str, store_id: str):
                     return low[n]
             return None
 
-        # 注意：save_import 会把命中别名的列重命名为标准字段（product sales→sales、
-        # quantity→orders），未命中的（total、selling/fba fees）保持原名。取值时两种都认。
+        # save_import 把命中别名的列重命名为标准字段（product sales→sales、total→
+        # net_amount、type→txn_type…）；用户手动映射同理。取值时标准名与原始英文名都认，
+        # 兼容「已自动识别 / 用户手动指认 / 旧数据未映射」三种情况。
         sample_keys = {str(k).lower() for r in data[:300] for k in r}
-        has_total = "total" in sample_keys
+        has_total = ("net_amount" in sample_keys) or ("total" in sample_keys)
         has_sales = ("sales" in sample_keys) or ("product sales" in sample_keys)
-        has_fees = ("selling fees" in sample_keys) or ("fba fees" in sample_keys)
+        has_fees = any(k in sample_keys for k in ("selling_fees", "selling fees", "fba_fees", "fba fees"))
 
         agg: Dict[str, Dict[str, float]] = defaultdict(
             lambda: {"order_rows": 0, "qty": 0.0, "sales": 0.0, "net": 0.0,
@@ -244,16 +255,17 @@ def build_import_tools(user_id: str, store_id: str):
             sku = str(col(r, "sku") or "").strip()
             if not sku:
                 continue
-            t = str(col(r, "type") or "").strip().lower()
+            kind = _txn_kind(col(r, "txn_type", "type"))
             a = agg[sku]
             sales = _num(col(r, "sales", "product sales")) or 0.0
-            total = _num(col(r, "total")) or 0.0
+            total = _num(col(r, "net_amount", "total")) or 0.0
             qty = _num(col(r, "orders", "quantity")) or 0.0
-            fees = abs(_num(col(r, "selling fees")) or 0.0) + abs(_num(col(r, "fba fees")) or 0.0)
-            if t == "order":
+            fees = (abs(_num(col(r, "selling_fees", "selling fees")) or 0.0)
+                    + abs(_num(col(r, "fba_fees", "fba fees")) or 0.0))
+            if kind == "order":
                 a["order_rows"] += 1; a["qty"] += qty; a["sales"] += sales
                 a["net"] += total; a["fees"] += fees
-            elif t.startswith("refund"):
+            elif kind == "refund":
                 a["refund_rows"] += 1; a["refund_amt"] += total
             else:
                 a["adj_rows"] += 1; a["adj_amt"] += total
