@@ -410,9 +410,11 @@ def _import_data_scope_directive(message: str, history: List[ChatTurn]) -> str:
     directives = {
         "orders": (
             "本次用户要求分析商品交易/订单/销售类数据。请优先且只使用 report_type='orders' "
-            "的导入文件；不要调用或分析 ads_search_terms，不要主动提 ACOS、ROAS、广告投放、"
-            "搜索词、竞价、否词，除非用户明确要求结合广告数据。优化建议只能基于订单/交易指标，"
-            "例如 SKU 销售额、订单数、销量、客单价、退款/调整、费用、总额、地区或履约等字段。"
+            "的导入文件；**优先调用 analyze_transactions** 得到按 SKU 的销量、销售额、平台费后"
+            "到手、退款率、平台费与问题商品，再据此做商品问题定位。不要调用或分析 ads_search_terms，"
+            "不要主动提 ACOS、ROAS、广告投放、搜索词、竞价、否词，除非用户明确要求结合广告数据。"
+            "优化建议只能基于订单/交易"
+            "指标；缺采购成本时只到「平台费后到手」，不声称具体利润/亏损金额。"
         ),
         "ads_search_terms": (
             "本次用户要求分析广告/搜索词/投放类数据。请优先使用 report_type='ads_search_terms' "
@@ -446,8 +448,8 @@ def _ads_expert_sop() -> str:
     skills = load_skills("ads")
     if not (persona or skills):
         return ""
-    parts = ["\n\n# 广告优化专业判断（#4 PPC 优化师能力）",
-             "本轮分析广告/搜索词数据时，套用下面的专业框架，但严格以工具返回的导入数据为准。"]
+    parts = ["\n\n# 店铺运营专业判断（广告优化 + 商品交易诊断）",
+             "分析广告/搜索词或商品交易/结算数据时，套用下面的专业框架，严格以工具返回的导入数据为准。"]
     if persona:
         parts.append(persona)
     if skills:
@@ -479,8 +481,8 @@ def _build_import_data_agent(user_id: str, store_id: str, observer=None, scope: 
         "可以说 ACOS 高、广告效率风险高、花费高于广告归因销售额，但不要说明确亏损。"
         "回答要贴近用户 query；用户追问“第二个/继续/为什么”时，要结合最近对话上下文理解指代。"
     )
-    # 广告场景注入 #4 的专业 SOP，让分析带上 PPC 优化师的判断框架（B-顺路）。
-    if scope == "ads_search_terms":
+    # 广告/交易/综合场景注入店铺运营的专业 SOP（人设 + 广告 SOP + 商品交易诊断 SOP）。
+    if scope in ("ads_search_terms", "orders", "multi"):
         prompt += _ads_expert_sop()
     return build_agent(
         system_prompt=prompt,

@@ -78,6 +78,28 @@ def _header_score(row: list[Any], known: set[str]) -> int:
     return recognized * 100 + len(normalized)
 
 
+def _detect_header(scan: list[list[Any]], known: set[str]) -> tuple[int, list[str]]:
+    """从前若干行里选出最像表头的一行，返回 (行号, 列名列表)。"""
+    scored = [(_header_score(row, known), -i, i) for i, row in enumerate(scan)]
+    _, _, header_idx = max(scored)
+    columns = [str(v or f"column_{i+1}").strip() for i, v in enumerate(scan[header_idx])]
+    return header_idx, columns
+
+
+def _biz_cols(columns: list[str], known: set[str]) -> set[str]:
+    """列名里能被识别为业务字段的（归一化）集合。"""
+    return {_norm(c) for c in columns if _norm(c) in known}
+
+
+def _cols_compatible(columns: list[str], primary_biz: set[str], known: set[str]) -> bool:
+    """该 sheet 表头是否与主表头同构：主表头的业务列多数也出现在这里。用于多 sheet
+    报表里区分「同一份明细的多个分片」与「透视表/汇总等异构 sheet」。"""
+    if not primary_biz:
+        return True
+    overlap = len(primary_biz & _biz_cols(columns, known))
+    return overlap / len(primary_biz) >= 0.6
+
+
 def _iter_csv_rows(content: bytes) -> Iterator[list[Any]]:
     text = content.decode("utf-8-sig", errors="replace")
     yield from csv.reader(io.StringIO(text))
@@ -118,9 +140,7 @@ def _parse_rows(rows_iter: Iterable[list[Any]], *, data_limit: int | None = None
     if not scan:
         raise ValueError("文件中没有可读取的数据")
 
-    scored = [(_header_score(row, known), -i, i) for i, row in enumerate(scan)]
-    _, _, header_idx = max(scored)
-    columns = [str(v or f"column_{i+1}").strip() for i, v in enumerate(scan[header_idx])]
+    header_idx, columns = _detect_header(scan, known)
     data = []
     row_count = 0
 
@@ -140,8 +160,70 @@ def _parse_rows(rows_iter: Iterable[list[Any]], *, data_limit: int | None = None
     return columns, data, row_count
 
 
+def _read_all_sheets(content: bytes) -> list[list[list[Any]]]:
+    """完整模式读 xlsx 每个 worksheet 的全部行（容忍损坏的维度声明）。"""
+    from openpyxl import load_workbook
+
+    wb = load_workbook(io.BytesIO(content), data_only=True)
+    try:
+        return [[list(r) for r in ws.iter_rows(values_only=True)] for ws in wb.worksheets]
+    finally:
+        wb.close()
+
+
+def _xlsx_worksheet_count(content: bytes) -> int:
+    from openpyxl import load_workbook
+
+    wb = load_workbook(io.BytesIO(content), data_only=True, read_only=True)
+    try:
+        return len(wb.worksheets)
+    finally:
+        wb.close()
+
+
+def _parse_multisheet(sheets: list[list[list[Any]]], *, data_limit: int | None = None
+                      ) -> tuple[list[str], list[dict[str, Any]], int]:
+    """多 worksheet 报表解析：每个 sheet 独立定位表头，选出「主表头」（识别到的业务列
+    最多者），只合并与主表头同构的 sheet 的数据行，丢弃透视表/汇总等异构 sheet；每个
+    sheet 各自跳过自身表头行，避免把其它分片的表头行当成数据。
+
+    针对亚马逊「日期范围报告」这类一个文件多月份、明细 sheet 与透视表 sheet 混排的导出。"""
+    known = {_norm(a) for aliases in ALIASES.values() for a in aliases}
+    parsed = []  # (score, columns, header_idx, nonempty_rows)
+    for rows in sheets:
+        nonempty = [r for r in rows if _is_nonempty(r)]
+        if not nonempty:
+            continue
+        scan = nonempty[:HEADER_SCAN_ROWS]
+        header_idx, columns = _detect_header(scan, known)
+        parsed.append((_header_score(scan[header_idx], known), columns, header_idx, nonempty))
+    if not parsed:
+        raise ValueError("文件中没有可读取的数据")
+    parsed.sort(key=lambda x: -x[0])
+    primary_cols = parsed[0][1]
+    primary_biz = _biz_cols(primary_cols, known)
+
+    data: list[dict[str, Any]] = []
+    row_count = 0
+    for _score, columns, header_idx, nonempty in parsed:
+        if not _cols_compatible(columns, primary_biz, known):
+            continue
+        for row in nonempty[header_idx + 1:]:
+            item = {columns[i]: row[i] for i in range(min(len(columns), len(row)))
+                    if row[i] not in (None, "")}
+            if not item:
+                continue
+            row_count += 1
+            if data_limit is None or len(data) < data_limit:
+                data.append(item)
+    return primary_cols, data, row_count
+
+
 def _parse_upload(filename: str, content: bytes, *, data_limit: int | None = None) -> tuple[list[str], list[dict[str, Any]], int]:
     lower = filename.lower()
+    # 多 worksheet 的 xlsx（如日期范围报告）走专门解析：合并同构明细 sheet、丢弃透视表。
+    if lower.endswith((".xlsx", ".xlsm")) and _xlsx_worksheet_count(content) > 1:
+        return _parse_multisheet(_read_all_sheets(content), data_limit=data_limit)
     columns, rows, row_count = _parse_rows(_iter_upload_rows(filename, content, read_only=True), data_limit=data_limit)
     # Amazon exports occasionally declare a broken worksheet dimension
     # (for example A1:A1 although thousands of cells exist). read_only mode
