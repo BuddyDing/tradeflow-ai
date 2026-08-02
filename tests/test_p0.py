@@ -149,7 +149,7 @@ class TestTenantPersistence(unittest.TestCase):
         saved = save_import("default", "default", "ads.xlsx", list(mapping), rows, mapping)
         self.assertEqual(saved["row_count"], 1)
         result = ads_overview("default", "default")
-        self.assertEqual(result["source"], "imported_report")
+        self.assertEqual(result["source"]["filename"], "ads.xlsx")
         self.assertEqual(result["items"][0]["acos"], 0.25)
         self.assertIn("recommendations", result["items"][0])
         self.assertIn(result["items"][0]["severity"], {"crit", "warn", "good"})

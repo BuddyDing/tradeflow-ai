@@ -37,9 +37,10 @@ from web import accounts, auth, store  # noqa: E402
 from web.import_tools import build_import_tools  # noqa: E402
 from web.listing_gen import generate_listing  # noqa: E402
 from web.opp_suggest import suggest_opportunities  # noqa: E402
-from web.database import connect, init_db  # noqa: E402
+from web.database import audit, connect, init_db  # noqa: E402
 from web.import_service import (ads_chat_context, ads_overview, competitor_rows, customer_overview, list_imports,
-                                parse_upload, parse_upload_preview, save_import, suggest_mapping)  # noqa: E402
+                                parse_upload, parse_upload_preview, save_import, save_sample_import,
+                                suggest_mapping)  # noqa: E402
 
 app = FastAPI(title="TradeFlow-AI")
 STATIC = Path(__file__).parent / "static"
@@ -322,6 +323,63 @@ def _sanitize_imported_ads_reply(reply: str) -> str:
     return out
 
 
+# create_store 的 marketplace 字段没有服务端枚举校验（前端下拉框限了 US/UK/DE/JP，
+# 但接口本身认什么都收）。传一个 data/compliance/ 里没有对应禁词表_<site>.csv 的值，
+# compliance_gate 会静默退化成只有 5 个种子词的兜底表，等于合规闸门形同虚设。这里按
+# 目前仓库里实际有词表的站点做白名单，其余一律按 US 处理（唯一有完整词表的站点）。
+_KNOWN_COMPLIANCE_SITES = {"US"}
+
+
+def _store_site(store_id: str) -> str:
+    with connect() as db:
+        row = db.execute("SELECT marketplace FROM stores WHERE id=?", (store_id,)).fetchone()
+    site = ((row["marketplace"] if row else "US") or "US").strip().upper()
+    return site if site in _KNOWN_COMPLIANCE_SITES else "US"
+
+
+def _compliance_guard(reply: str, site: str) -> str:
+    if not reply.strip():
+        return reply
+    result = compliance_gate.func(text=reply, site=site)
+    if result["passed"]:
+        return reply
+    lines = [
+        f"- 「{v['词']}」（{v.get('类型', '')}）"
+        + (f"，建议替换为「{v['合规替代']}」" if v.get("合规替代") else "")
+        for v in result["violations"]
+    ]
+    return (
+        "⚠️ 这条回复命中禁用词/侵权表达，已被服务端合规闸门拦截，不能直接展示：\n"
+        + "\n".join(lines)
+        + "\n\n请换个说法重新问我，或前往「合规风控」智能体人工复核。"
+    )
+
+
+# compliance_gate 的禁词表是给"要发布到亚马逊的对外文案"用的（标题/五点/广告语等），
+# 命中即拦截、没有语境豁免。selection/market/teardown/ads 这类调研分析回复经常需要
+# *提到*这些词——比如指出"这条竞品标题写了 fda approved，属于违规"——如果不分场景一律
+# 硬拦，会把正常的调研问答也拦掉（误伤先于漏放）。所以只在"用户明显是在要一段可直接
+# 使用的对外文案"时才套服务端出口闸门；listing/imagery 这两个智能体本身就是产出该类文案
+# 的，无论措辞如何都套上，堵住 P0 报告里"聊天input直接要一句广告语"那条绕过路径。
+_COPY_REQUEST_TERMS = (
+    "广告语", "广告文案", "宣传语", "宣传文案", "推广语", "营销文案", "卖点文案",
+    "标题", "五点描述", "五点卖点", "listing 文案", "listing文案", "产品描述", "商品描述",
+    "slogan", "ad copy", "tagline", "title", "product description", "bullet point", "bullets",
+)
+_COPY_REQUEST_AGENTS = {"listing", "imagery"}
+
+
+def _looks_like_copy_request(message: str, agent: str, history: List[ChatTurn] | None = None) -> bool:
+    if agent in _COPY_REQUEST_AGENTS:
+        return True
+    if _contains_any((message or "").lower(), _COPY_REQUEST_TERMS):
+        return True
+    # 一旦本轮对话触发过闸门，后续"再夸张一点""换个说法"这类追问单看当前消息
+    # 命不中关键词，但仍是在继续同一段文案——沿用 _is_import_data_query 的
+    # "历史里出现过强信号就保持在支线里"套路，避免多轮对话把闸门绕开。
+    return _contains_any(_history_text(history or []).lower(), _COPY_REQUEST_TERMS)
+
+
 # 明确指向"用户上传的表格/报表"的强信号：只要当前消息出现即可进导入分析支线。
 _IMPORT_STRONG_TERMS = (
     "导入", "已导", "刚导", "刚上传", "上传", "报表", "excel", "xlsx", "csv", "字段映射",
@@ -592,6 +650,26 @@ def add_chat_message(session_id: str, body: ChatMessageIn,
     return {"ok": True, "id": cur.lastrowid}
 
 
+@app.delete("/api/chat/sessions/{session_id}")
+def remove_chat_session(session_id: str,
+                        x_tradeflow_user: str = Depends(auth.current_user),
+                        x_tradeflow_store: str = Depends(_current_store)) -> Dict[str, bool]:
+    # GET /api/chat/sessions 在当前店铺没有会话时会回退到该用户名下其它店铺的会话
+    # （见上面的 fallback 注释），前端因此可能展示一条 store_id 不等于当前店铺的会话。
+    # 删除也要认 _session_owned 同一套归属判定，否则用户点得到、删不掉。
+    with connect() as db:
+        row = _session_owned(db, session_id, x_tradeflow_user, x_tradeflow_store)
+        if not row:
+            return {"ok": False}
+        cur = db.execute(
+            "DELETE FROM chat_sessions WHERE id=? AND user_id=?",
+            (session_id, x_tradeflow_user),
+        )
+    if cur.rowcount:
+        audit(x_tradeflow_user, x_tradeflow_store, "chat_session.deleted", {"id": session_id})
+    return {"ok": bool(cur.rowcount)}
+
+
 @app.get("/")
 def index() -> FileResponse:
     # 新的完整产品原型页（对话已接后端；机会上新等模块仍在接入中）。
@@ -677,10 +755,30 @@ async def import_commit(file: UploadFile = File(...), mapping: str = Form(defaul
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.post("/api/imports/sample")
+def import_sample(x_tradeflow_user: str = Depends(auth.current_user),
+                  x_tradeflow_store: str = Depends(_current_store)) -> Dict[str, Any]:
+    return save_sample_import(x_tradeflow_user, x_tradeflow_store)
+
+
 @app.get("/api/imports")
 def imports(x_tradeflow_user: str = Depends(auth.current_user),
             x_tradeflow_store: str = Depends(_current_store)) -> Dict[str, Any]:
     return {"items": list_imports(x_tradeflow_user, x_tradeflow_store)}
+
+
+@app.delete("/api/imports/{batch_id}")
+def remove_import(batch_id: str,
+                  x_tradeflow_user: str = Depends(auth.current_user),
+                  x_tradeflow_store: str = Depends(_current_store)) -> Dict[str, bool]:
+    with connect() as db:
+        cur = db.execute(
+            "DELETE FROM import_batches WHERE id=? AND user_id=? AND store_id=?",
+            (batch_id, x_tradeflow_user, x_tradeflow_store),
+        )
+    if cur.rowcount:
+        audit(x_tradeflow_user, x_tradeflow_store, "import.deleted", {"id": batch_id})
+    return {"ok": bool(cur.rowcount)}
 
 
 @app.get("/api/optimization/ads")
@@ -746,13 +844,16 @@ def chat(body: ChatIn, x_tradeflow_user: str = Depends(auth.current_user),
             "tools": step.tool_calls,
         })
 
-    has_imports = bool(list_imports(x_tradeflow_user, x_tradeflow_store))
+    has_imports = any(i.get('status') == 'completed' for i in list_imports(x_tradeflow_user, x_tradeflow_store))
     if _is_import_data_query(body.message, body.history, has_imports):
         scope = _import_data_scope(body.message, body.history)
         result = _build_import_data_agent(x_tradeflow_user, x_tradeflow_store, observe, scope=scope).run(
             _import_data_user_input(body.message, body.history))
+        reply = _sanitize_imported_ads_reply(result.output)
+        if _looks_like_copy_request(body.message, body.agent, body.history):
+            reply = _compliance_guard(reply, _store_site(x_tradeflow_store))
         return ChatOut(
-            reply=_sanitize_imported_ads_reply(result.output),
+            reply=reply,
             iterations=result.iterations,
             stopped_early=result.stopped_early,
             steps=steps,
@@ -761,8 +862,11 @@ def chat(body: ChatIn, x_tradeflow_user: str = Depends(auth.current_user),
     # Fresh agent per request → clean, single-turn conversations (no shared state).
     agent = _build_agent(body.agent, observe, x_tradeflow_user, x_tradeflow_store)
     result = agent.run(body.message, history=_to_messages(body.history))
+    reply = result.output
+    if _looks_like_copy_request(body.message, body.agent, body.history):
+        reply = _compliance_guard(reply, _store_site(x_tradeflow_store))
     return ChatOut(
-        reply=result.output,
+        reply=reply,
         iterations=result.iterations,
         stopped_early=result.stopped_early,
         steps=steps,
@@ -791,7 +895,12 @@ async def chat_stream(body: ChatIn, x_tradeflow_user: str = Depends(auth.current
 
     def run_agent() -> None:
         try:
-            has_imports = bool(list_imports(x_tradeflow_user, x_tradeflow_store))
+            # 只有"像是在要一段对外文案"时才缓冲+过闸；其它调研/分析类回复照旧边生成边推，
+            # 不然会把每一句普通问答都拖到生成完才显示，还会把顺带提到禁词的分析回复误伤
+            # 掉（比如"这条竞品标题写了 fda approved，属于违规" 这种复述性描述）。
+            needs_guard = _looks_like_copy_request(body.message, body.agent, body.history)
+            token_buffer: List[str] = []
+            has_imports = any(i.get('status') == 'completed' for i in list_imports(x_tradeflow_user, x_tradeflow_store))
             is_import_query = _is_import_data_query(body.message, body.history, has_imports)
             if is_import_query:
                 scope = _import_data_scope(body.message, body.history)
@@ -807,14 +916,30 @@ async def chat_stream(body: ChatIn, x_tradeflow_user: str = Depends(auth.current
                 history = _to_messages(body.history)
             for kind, payload in agent.run_stream(user_input, history=history):
                 if kind == "token":
-                    push({"type": "token", "text": payload})
+                    if needs_guard:
+                        token_buffer.append(payload)
+                    else:
+                        push({"type": "token", "text": payload})
                 elif kind == "reset":
+                    token_buffer.clear()
                     push({"type": "reset"})
                 elif kind == "tools":
                     push({"type": "status", "tools": payload,
                           "message": "正在调用工具：" + "、".join(payload) + " …"})
                 elif kind == "final":
                     reply = _sanitize_imported_ads_reply(payload.output) if is_import_query else payload.output
+                    if needs_guard:
+                        guarded_reply = _compliance_guard(reply, _store_site(x_tradeflow_store))
+                        # token_buffer 里存的是模型原始未清洗的 token；只有 sanitize/guard
+                        # 都没改动过文本（guarded_reply 跟原始输出完全一致）才能安全回放它，
+                        # 否则回放出去的会是"亏损"之类被 sanitize 掉的原始措辞，跟 final.reply
+                        # 显示的清洗后文本对不上。
+                        if guarded_reply == payload.output:
+                            for token in token_buffer:
+                                push({"type": "token", "text": token})
+                        else:
+                            push({"type": "token", "text": guarded_reply})
+                        reply = guarded_reply
                     push({"type": "final", "reply": reply,
                           "iterations": payload.iterations,
                           "stopped_early": payload.stopped_early})
