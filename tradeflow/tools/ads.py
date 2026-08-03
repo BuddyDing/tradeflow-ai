@@ -59,6 +59,17 @@ def _pick(candidates: Tuple[str, ...]) -> Optional[str]:
     return None
 
 
+def _source_label(report: str) -> str:
+    """标注数据来源：仓库预置样例 vs 真实文件。这些工具读的是磁盘 data/ads/，
+    不是用户在「数据导入」上传的数据库数据——没放真实文件时会退回样例，必须显式
+    标注，避免把样例数据当成用户自己的报表来分析（会误导用户）。"""
+    if not report:
+        return ""
+    if "样例" in report or "sample" in report.lower():
+        return "⚠️ 示例数据（仓库预置样例，非你在「数据导入」上传的报表；如需分析真实数据请走数据导入）"
+    return f"真实文件：{report}"
+
+
 def _read_sheets(name: str, key_columns: Tuple[str, ...]) -> List[Dict[str, Any]]:
     """读 data/ads/ 下的一份报表，返回 list[dict]。
 
@@ -242,7 +253,7 @@ def ad_overview(report: str = "") -> Dict[str, Any]:
         })
     total_spend = sum(c["花费"] for c in by_campaign)
     total_sales = sum(c["销售额"] for c in by_campaign)
-    return {"报表": report, "搜索词数": len(terms),
+    return {"报表": report, "数据来源": _source_label(report), "搜索词数": len(terms),
             "总花费": round(total_spend, 2), "总销售额": round(total_sales, 2),
             "总ACOS": round(total_spend / total_sales, 4) if total_sales else None,
             "按广告活动": by_campaign}
@@ -258,7 +269,7 @@ def sku_breakeven_acos() -> Dict[str, Any]:
     for sku, s in sorted(stats.items(), key=lambda x: -x[1]["销售额"]):
         be, basis = _breakeven(sku)
         out.append({**{"SKU": sku}, **s, "盈亏平衡ACOS": be, "口径": basis})
-    return {"SKU数": len(out), "明细": out,
+    return {"SKU数": len(out), "数据来源": _source_label(_pick(_SETTLE_REPORTS) or ""), "明细": out,
             "说明": "广告 ACOS 高于该 SKU 盈亏平衡 ACOS 即在亏钱"}
 
 
@@ -282,7 +293,7 @@ def classify_search_terms(report: str = "", campaign: str = "",
         buckets[cls].append({**t, "判定依据": reason, "盈亏线": be})
     for cls in buckets:
         buckets[cls].sort(key=lambda x: -x["花费"])
-    return {"报表": report, "筛选活动": campaign or "全部",
+    return {"报表": report, "数据来源": _source_label(report), "筛选活动": campaign or "全部",
             "统计": {k: len(v) for k, v in buckets.items()},
             "分类": {k: v[:top_n] for k, v in buckets.items()}}
 
@@ -317,7 +328,8 @@ def suggest_bid_actions(report: str = "", campaign: str = "",
                             "建议竞价": new_bid, "理由": t["判定依据"]})
     order = {"垃圾词": 0, "好词": 1, "潜力长尾词": 2, "观察": 3}
     actions.sort(key=lambda a: order.get(a["分类"], 9))
-    return {"报表": result["报表"], "筛选活动": result["筛选活动"],
+    return {"报表": result["报表"], "数据来源": result.get("数据来源", ""),
+            "筛选活动": result["筛选活动"],
             "动作数": len(actions), "动作清单": actions}
 
 
@@ -342,7 +354,7 @@ def export_negative_keywords(report: str = "", campaign: str = "") -> Dict[str, 
         for t in rows:
             w.writerow([t["广告活动"], t["广告活动"], t["搜索词"],
                         "Negative Exact", t["花费"], t["点击"], t["判定依据"]])
-    return {"条数": len(rows), "文件": str(path),
+    return {"条数": len(rows), "数据来源": result.get("数据来源", ""), "文件": str(path),
             "预计月省": round(sum(t["花费"] for t in rows), 2),
             "说明": "按否定精准导出；上传前请人工过目"}
 

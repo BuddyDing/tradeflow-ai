@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
 import json
 import re
@@ -30,15 +31,24 @@ ALIASES = {
     "asin": {"asin", "商品asin"},
     "campaign": {"campaign name", "广告活动名称", "广告活动"},
     "search_term": {"customer search term", "客户搜索词", "搜索词"},
-    "impressions": {"impressions", "展示量", "曝光量"},
-    "clicks": {"clicks", "点击量"},
-    "spend": {"spend", "花费", "广告花费"},
-    "sales": {"7 day total sales", "7天总销售额", "销售额", "product sales"},
-    "orders": {"7 day total orders", "7天总订单数(#)", "订单数", "quantity"},
-    "quantity": {"quantity", "qty", "数量", "购买数量"},
+    "impressions": {"impressions", "展示量", "曝光量", "曝光", "展现量"},
+    "clicks": {"clicks", "点击量", "点击"},
+    "spend": {"spend", "花费", "广告花费", "广告支出"},
+    "sales": {"7 day total sales", "7天总销售额", "销售额", "product sales", "商品销售额", "成交额"},
+    "orders": {"7 day total orders", "7天总订单数(#)", "订单数", "quantity", "订单量"},
+    "quantity": {"quantity", "qty", "数量", "购买数量", "销量"},
     "price": {"price", "价格", "售价"},
     "stock": {"stock", "库存", "库存数量"},
-    "order_id": {"amazon-order-id", "order id", "订单号"},
+    "order_id": {"amazon-order-id", "order id", "订单号", "订单编号"},
+    # 交易/结算报告
+    "txn_type": {"type", "交易类型", "类型", "transaction type"},
+    "net_amount": {"total", "总计", "到手金额", "结算金额", "净额", "net", "实收"},
+    "selling_fees": {"selling fees", "销售佣金", "佣金", "referral fee", "平台佣金"},
+    "fba_fees": {"fba fees", "fba费用", "fba 费用", "配送费", "fba配送费"},
+    # 成本表（后续导入）
+    "purchase_cost": {"采购成本", "采购价", "purchase cost", "进货价", "product cost", "成本价"},
+    "freight": {"头程", "头程运费", "头程成本", "freight", "first leg", "运费"},
+    "unit_cost": {"单件成本", "单位成本", "单件总成本", "unit cost", "landed cost", "到岸成本"},
     "buyer": {"buyer", "buyer name", "customer", "customer name", "recipient name", "ship to name", "买家", "买家姓名", "收件人"},
     "purchase_date": {"purchase date", "order date", "date", "下单时间", "购买日期", "下单日期"},
     "title": {"title", "product title", "商品标题", "标题"},
@@ -50,6 +60,37 @@ ALIASES = {
 
 def _norm(value: Any) -> str:
     return re.sub(r"[\s_\-]+", " ", str(value or "").strip().lower())
+
+
+def _fingerprint(columns: list[str]) -> str:
+    """列名集合的指纹（归一化后排序）。同一套表头（不论列序）得到同一指纹，用于复用映射。"""
+    norm = sorted(_norm(c) for c in columns if _norm(c))
+    return hashlib.sha256("|".join(norm).encode("utf-8")).hexdigest()[:32]
+
+
+def save_mapping(user_id: str, store_id: str, columns: list[str], mapping: dict[str, str]) -> None:
+    """记住用户对这套表头确认过的字段映射，下次同样表头自动复用。"""
+    if not (user_id and mapping):
+        return
+    with connect() as db:
+        db.execute(
+            "INSERT INTO saved_mappings(user_id,store_id,fingerprint,mapping_json,updated_at) "
+            "VALUES(?,?,?,?,CURRENT_TIMESTAMP) "
+            "ON CONFLICT(user_id,store_id,fingerprint) DO UPDATE SET "
+            "mapping_json=excluded.mapping_json, updated_at=CURRENT_TIMESTAMP",
+            (user_id, store_id, _fingerprint(columns), json.dumps(mapping, ensure_ascii=False)),
+        )
+
+
+def load_saved_mapping(user_id: str, store_id: str, columns: list[str]) -> dict[str, str]:
+    if not user_id:
+        return {}
+    with connect() as db:
+        row = db.execute(
+            "SELECT mapping_json FROM saved_mappings WHERE user_id=? AND store_id=? AND fingerprint=?",
+            (user_id, store_id, _fingerprint(columns)),
+        ).fetchone()
+    return json.loads(row[0]) if row else {}
 
 
 def suggest_mapping(columns: list[str]) -> dict[str, str]:
@@ -67,7 +108,9 @@ def detect_report_type(mapping: dict[str, str]) -> str:
     fields = set(mapping.values())
     if {"campaign", "search_term", "clicks", "spend"} <= fields:
         return "ads_search_terms"
-    if "order_id" in fields or {"sku", "orders", "sales"} <= fields:
+    if {"sku"} <= fields and (fields & {"purchase_cost", "freight", "unit_cost"}):
+        return "cost"
+    if "order_id" in fields or {"sku", "orders", "sales"} <= fields or ("txn_type" in fields and "sku" in fields):
         return "orders"
     if {"sku", "stock"} <= fields:
         return "inventory"
@@ -85,6 +128,28 @@ def _header_score(row: list[Any], known: set[str]) -> int:
     recognized = sum(c in known for c in normalized)
     # Business-field matches dominate; fuller rows win exact ties.
     return recognized * 100 + len(normalized)
+
+
+def _detect_header(scan: list[list[Any]], known: set[str]) -> tuple[int, list[str]]:
+    """从前若干行里选出最像表头的一行，返回 (行号, 列名列表)。"""
+    scored = [(_header_score(row, known), -i, i) for i, row in enumerate(scan)]
+    _, _, header_idx = max(scored)
+    columns = [str(v or f"column_{i+1}").strip() for i, v in enumerate(scan[header_idx])]
+    return header_idx, columns
+
+
+def _biz_cols(columns: list[str], known: set[str]) -> set[str]:
+    """列名里能被识别为业务字段的（归一化）集合。"""
+    return {_norm(c) for c in columns if _norm(c) in known}
+
+
+def _cols_compatible(columns: list[str], primary_biz: set[str], known: set[str]) -> bool:
+    """该 sheet 表头是否与主表头同构：主表头的业务列多数也出现在这里。用于多 sheet
+    报表里区分「同一份明细的多个分片」与「透视表/汇总等异构 sheet」。"""
+    if not primary_biz:
+        return True
+    overlap = len(primary_biz & _biz_cols(columns, known))
+    return overlap / len(primary_biz) >= 0.6
 
 
 def _iter_csv_rows(content: bytes) -> Iterator[list[Any]]:
@@ -127,9 +192,7 @@ def _parse_rows(rows_iter: Iterable[list[Any]], *, data_limit: int | None = None
     if not scan:
         raise ValueError("文件中没有可读取的数据")
 
-    scored = [(_header_score(row, known), -i, i) for i, row in enumerate(scan)]
-    _, _, header_idx = max(scored)
-    columns = [str(v or f"column_{i+1}").strip() for i, v in enumerate(scan[header_idx])]
+    header_idx, columns = _detect_header(scan, known)
     data = []
     row_count = 0
 
@@ -149,8 +212,70 @@ def _parse_rows(rows_iter: Iterable[list[Any]], *, data_limit: int | None = None
     return columns, data, row_count
 
 
+def _read_all_sheets(content: bytes) -> list[list[list[Any]]]:
+    """完整模式读 xlsx 每个 worksheet 的全部行（容忍损坏的维度声明）。"""
+    from openpyxl import load_workbook
+
+    wb = load_workbook(io.BytesIO(content), data_only=True)
+    try:
+        return [[list(r) for r in ws.iter_rows(values_only=True)] for ws in wb.worksheets]
+    finally:
+        wb.close()
+
+
+def _xlsx_worksheet_count(content: bytes) -> int:
+    from openpyxl import load_workbook
+
+    wb = load_workbook(io.BytesIO(content), data_only=True, read_only=True)
+    try:
+        return len(wb.worksheets)
+    finally:
+        wb.close()
+
+
+def _parse_multisheet(sheets: list[list[list[Any]]], *, data_limit: int | None = None
+                      ) -> tuple[list[str], list[dict[str, Any]], int]:
+    """多 worksheet 报表解析：每个 sheet 独立定位表头，选出「主表头」（识别到的业务列
+    最多者），只合并与主表头同构的 sheet 的数据行，丢弃透视表/汇总等异构 sheet；每个
+    sheet 各自跳过自身表头行，避免把其它分片的表头行当成数据。
+
+    针对亚马逊「日期范围报告」这类一个文件多月份、明细 sheet 与透视表 sheet 混排的导出。"""
+    known = {_norm(a) for aliases in ALIASES.values() for a in aliases}
+    parsed = []  # (score, columns, header_idx, nonempty_rows)
+    for rows in sheets:
+        nonempty = [r for r in rows if _is_nonempty(r)]
+        if not nonempty:
+            continue
+        scan = nonempty[:HEADER_SCAN_ROWS]
+        header_idx, columns = _detect_header(scan, known)
+        parsed.append((_header_score(scan[header_idx], known), columns, header_idx, nonempty))
+    if not parsed:
+        raise ValueError("文件中没有可读取的数据")
+    parsed.sort(key=lambda x: -x[0])
+    primary_cols = parsed[0][1]
+    primary_biz = _biz_cols(primary_cols, known)
+
+    data: list[dict[str, Any]] = []
+    row_count = 0
+    for _score, columns, header_idx, nonempty in parsed:
+        if not _cols_compatible(columns, primary_biz, known):
+            continue
+        for row in nonempty[header_idx + 1:]:
+            item = {columns[i]: row[i] for i in range(min(len(columns), len(row)))
+                    if row[i] not in (None, "")}
+            if not item:
+                continue
+            row_count += 1
+            if data_limit is None or len(data) < data_limit:
+                data.append(item)
+    return primary_cols, data, row_count
+
+
 def _parse_upload(filename: str, content: bytes, *, data_limit: int | None = None) -> tuple[list[str], list[dict[str, Any]], int]:
     lower = filename.lower()
+    # 多 worksheet 的 xlsx（如日期范围报告）走专门解析：合并同构明细 sheet、丢弃透视表。
+    if lower.endswith((".xlsx", ".xlsm")) and _xlsx_worksheet_count(content) > 1:
+        return _parse_multisheet(_read_all_sheets(content), data_limit=data_limit)
     columns, rows, row_count = _parse_rows(_iter_upload_rows(filename, content, read_only=True), data_limit=data_limit)
     # Amazon exports occasionally declare a broken worksheet dimension
     # (for example A1:A1 although thousands of cells exist). read_only mode
@@ -166,10 +291,17 @@ def parse_upload(filename: str, content: bytes) -> tuple[list[str], list[dict[st
     return columns, rows
 
 
-def parse_upload_preview(filename: str, content: bytes) -> dict[str, Any]:
+def parse_upload_preview(filename: str, content: bytes,
+                         user_id: str = "", store_id: str = "") -> dict[str, Any]:
     columns, preview, row_count = _parse_upload(filename, content, data_limit=PREVIEW_ROWS)
     mapping = suggest_mapping(columns)
-    return {"columns": columns, "mapping": mapping, "preview": preview, "row_count": row_count}
+    # 用户此前对同一套表头确认过的映射优先复用（覆盖自动猜测），彻底解决同格式重复指认。
+    saved = load_saved_mapping(user_id, store_id, columns)
+    for col in columns:
+        if col in saved:
+            mapping[col] = saved[col]
+    return {"columns": columns, "mapping": mapping, "preview": preview,
+            "row_count": row_count, "reused_mapping": bool(saved)}
 
 
 def save_import(user_id: str, store_id: str, filename: str, columns: list[str],
@@ -218,6 +350,7 @@ def save_import(user_id: str, store_id: str, filename: str, columns: list[str],
                 "INSERT INTO imported_rows(batch_id,user_id,store_id,row_json) VALUES(?,?,?,?)",
                 chunk,
             )
+    save_mapping(user_id, store_id, columns, mapping)  # 记住这套表头的映射，下次自动复用
     audit(user_id, store_id, "import.completed",
           {"batch_id": batch_id, "rows": row_count, "report_type": report_type, "status": status})
     return {"id": batch_id, "filename": filename, "report_type": report_type,

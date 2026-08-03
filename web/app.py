@@ -29,7 +29,7 @@ from pydantic import BaseModel, Field  # noqa: E402
 from config.settings import settings  # noqa: E402
 from tradeflow import registry  # noqa: E402
 from tradeflow.agent.loop import AgentStep  # noqa: E402
-from tradeflow.compose import compose_system_prompt  # noqa: E402
+from tradeflow.compose import compose_system_prompt, load_persona, load_skills  # noqa: E402
 from tradeflow.factory import build_agent  # noqa: E402
 from tradeflow.llm.base import Message, Role  # noqa: E402
 from tradeflow.tools.compliance import compliance_gate  # noqa: E402
@@ -206,7 +206,19 @@ def _agent_list() -> List[Dict[str, str]]:
                          for s in registry.list_specs()]
 
 
-def _build_agent(agent_key: str, observer):
+def _has_import(user_id: str, store_id: str, report_type: str) -> bool:
+    if not user_id:
+        return False
+    return any(i.get("report_type") == report_type
+               for i in list_imports(user_id, store_id))
+
+
+def _build_agent(agent_key: str, observer, user_id: str = "", store_id: str = ""):
+    # 打通：直接选了 #4 广告专家、且数据库里有导入的广告数据时，读导入数据而非磁盘
+    # 样例——复用注入了 #4 SOP 的导入分析智能体（scope=ads_search_terms）。没有导入
+    # 数据才回退到 registry 的磁盘工具（此时工具已在结果里硬标注“示例数据”）。
+    if agent_key == "ads" and _has_import(user_id, store_id, "ads_search_terms"):
+        return _build_import_data_agent(user_id, store_id, observer, scope="ads_search_terms")
     if agent_key in registry.REGISTRY:
         return registry.build(agent_key, observer=observer)
     return build_agent(observer=observer)
@@ -456,9 +468,11 @@ def _import_data_scope_directive(message: str, history: List[ChatTurn]) -> str:
     directives = {
         "orders": (
             "本次用户要求分析商品交易/订单/销售类数据。请优先且只使用 report_type='orders' "
-            "的导入文件；不要调用或分析 ads_search_terms，不要主动提 ACOS、ROAS、广告投放、"
-            "搜索词、竞价、否词，除非用户明确要求结合广告数据。优化建议只能基于订单/交易指标，"
-            "例如 SKU 销售额、订单数、销量、客单价、退款/调整、费用、总额、地区或履约等字段。"
+            "的导入文件；**优先调用 analyze_transactions** 得到按 SKU 的销量、销售额、平台费后"
+            "到手、退款率、平台费与问题商品，再据此做商品问题定位。不要调用或分析 ads_search_terms，"
+            "不要主动提 ACOS、ROAS、广告投放、搜索词、竞价、否词，除非用户明确要求结合广告数据。"
+            "优化建议只能基于订单/交易"
+            "指标；缺采购成本时只到「平台费后到手」，不声称具体利润/亏损金额。"
         ),
         "ads_search_terms": (
             "本次用户要求分析广告/搜索词/投放类数据。请优先使用 report_type='ads_search_terms' "
@@ -484,7 +498,31 @@ def _import_data_scope_directive(message: str, history: List[ChatTurn]) -> str:
     return directives[scope]
 
 
-def _build_import_data_agent(user_id: str, store_id: str, observer=None):
+def _ads_expert_sop() -> str:
+    """#4 广告优化师的人设 + SOP（来自 prompts/ads.md 与 skills/ads/），供广告类
+    导入分析复用其专业判断框架。附一段护栏：导入报表里常缺规则表/成本表/结算数据，
+    此时按三分类的定性逻辑判断，但不硬套具体阈值倍数，也不声称明确亏损。"""
+    persona = load_persona("ads")
+    skills = load_skills("ads")
+    if not (persona or skills):
+        return ""
+    parts = ["\n\n# 店铺运营专业判断（广告优化 + 商品交易诊断）",
+             "分析广告/搜索词或商品交易/结算数据时，套用下面的专业框架，严格以工具返回的导入数据为准。"]
+    if persona:
+        parts.append(persona)
+    if skills:
+        parts.append(skills)
+    parts.append(
+        "重要护栏：上面 SOP 提到的规则阈值表（data/ads/调词规则.csv）、SKU 成本表、"
+        "结算回款率在导入报表里通常不存在。缺这些时：用三分类（垃圾词/好词/潜力长尾词/观察）"
+        "的定性逻辑判断方向，但不要引用或编造具体阈值倍数与盈亏线数值，明确标注“缺成本/结算"
+        "数据，盈亏线无法精确计算”；只基于花费、销售额、订单、点击、ACOS 给优先级与动作方向，"
+        "不用“花费−销售额”或“ACOS>100%”直接声称明确亏损。"
+    )
+    return "\n\n".join(parts)
+
+
+def _build_import_data_agent(user_id: str, store_id: str, observer=None, scope: str = "auto"):
     prompt = (
         "你是 TradeFlow-AI 的通用导入数据分析智能体。用户上传的 Excel/CSV 已经入库，"
         "你不能假设只分析某一种文件，也不能声称没有收到文件，除非工具返回确实没有数据。\n\n"
@@ -501,6 +539,9 @@ def _build_import_data_agent(user_id: str, store_id: str, observer=None):
         "可以说 ACOS 高、广告效率风险高、花费高于广告归因销售额，但不要说明确亏损。"
         "回答要贴近用户 query；用户追问“第二个/继续/为什么”时，要结合最近对话上下文理解指代。"
     )
+    # 广告/交易/综合场景注入店铺运营的专业 SOP（人设 + 广告 SOP + 商品交易诊断 SOP）。
+    if scope in ("ads_search_terms", "orders", "multi"):
+        prompt += _ads_expert_sop()
     return build_agent(
         system_prompt=prompt,
         tools=build_import_tools(user_id, store_id),
@@ -684,12 +725,15 @@ def remove_opportunity(opp_id: str, x_tradeflow_user: str = Depends(auth.current
 
 
 @app.post("/api/imports/preview")
-async def import_preview(file: UploadFile = File(...)) -> Dict[str, Any]:
+async def import_preview(file: UploadFile = File(...),
+                         x_tradeflow_user: str = Depends(auth.current_user),
+                         x_tradeflow_store: str = Depends(_current_store)) -> Dict[str, Any]:
     content = await file.read()
     if len(content) > 80 * 1024 * 1024:
         raise HTTPException(status_code=413, detail="文件不能超过 80MB")
     try:
-        preview = parse_upload_preview(file.filename or "upload.xlsx", content)
+        preview = parse_upload_preview(file.filename or "upload.xlsx", content,
+                                       x_tradeflow_user, x_tradeflow_store)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"filename": file.filename, **preview}
@@ -802,7 +846,8 @@ def chat(body: ChatIn, x_tradeflow_user: str = Depends(auth.current_user),
 
     has_imports = any(i.get('status') == 'completed' for i in list_imports(x_tradeflow_user, x_tradeflow_store))
     if _is_import_data_query(body.message, body.history, has_imports):
-        result = _build_import_data_agent(x_tradeflow_user, x_tradeflow_store, observe).run(
+        scope = _import_data_scope(body.message, body.history)
+        result = _build_import_data_agent(x_tradeflow_user, x_tradeflow_store, observe, scope=scope).run(
             _import_data_user_input(body.message, body.history))
         reply = _sanitize_imported_ads_reply(result.output)
         if _looks_like_copy_request(body.message, body.agent, body.history):
@@ -815,7 +860,7 @@ def chat(body: ChatIn, x_tradeflow_user: str = Depends(auth.current_user),
         )
 
     # Fresh agent per request → clean, single-turn conversations (no shared state).
-    agent = _build_agent(body.agent, observe)
+    agent = _build_agent(body.agent, observe, x_tradeflow_user, x_tradeflow_store)
     result = agent.run(body.message, history=_to_messages(body.history))
     reply = result.output
     if _looks_like_copy_request(body.message, body.agent, body.history):
@@ -858,11 +903,15 @@ async def chat_stream(body: ChatIn, x_tradeflow_user: str = Depends(auth.current
             has_imports = any(i.get('status') == 'completed' for i in list_imports(x_tradeflow_user, x_tradeflow_store))
             is_import_query = _is_import_data_query(body.message, body.history, has_imports)
             if is_import_query:
-                agent = _build_import_data_agent(x_tradeflow_user, x_tradeflow_store, lambda _step: None)
+                scope = _import_data_scope(body.message, body.history)
+                agent = _build_import_data_agent(x_tradeflow_user, x_tradeflow_store,
+                                                 lambda _step: None, scope=scope)
                 user_input = _import_data_user_input(body.message, body.history)
                 history = None
             else:
-                agent = _build_agent(body.agent, lambda _step: None)  # 流式下不用 observer
+                # 流式下不用 observer
+                agent = _build_agent(body.agent, lambda _step: None,
+                                     x_tradeflow_user, x_tradeflow_store)
                 user_input = body.message
                 history = _to_messages(body.history)
             for kind, payload in agent.run_stream(user_input, history=history):

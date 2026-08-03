@@ -99,6 +99,12 @@ def init_db() -> None:
               FOREIGN KEY(user_id) REFERENCES users(id)
             );
             CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+            CREATE TABLE IF NOT EXISTS saved_mappings (
+              user_id TEXT NOT NULL, store_id TEXT NOT NULL,
+              fingerprint TEXT NOT NULL, mapping_json TEXT NOT NULL DEFAULT '{}',
+              updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              PRIMARY KEY(user_id, store_id, fingerprint)
+            );
             """
         )
         _ensure_column(db, "users", "username", "TEXT")
